@@ -1,8 +1,8 @@
 Package: cvam
 Type: Package
 Title: Coarsened Variable Modeling
-Version: 0.9.0
-Date: 2021-09-22
+Version: 0.9.1
+Date: 2021-10-01
 Author: Joseph L. Schafer <Joseph.L.Schafer@census.gov>
 Maintainer: Joseph L. Schafer <Joseph.L.Schafer@census.gov>
 Description: Extends R's implementation of categorical variables (factors) 
@@ -11,10 +11,10 @@ Description: Extends R's implementation of categorical variables (factors)
         information and examples are provided in the package vignettes.
 Depends: R (>= 3.3.0)
 Imports: stats, Formula, coda
-Suggests: nnet, lme4, MASS, xtable, sticky
+Suggests: nnet, lme4, MASS, xtable
 License: GPL-3 | file LICENSE
 LazyData: yes
 NeedsCompilation: yes
-Packaged: 2021-09-23 13:23:49 UTC; schaf310
+Packaged: 2021-10-01 12:12:51 UTC; schaf310
 Repository: CRAN
-Date/Publication: 2021-09-23 18:10:02 UTC
+Date/Publication: 2021-10-01 13:50:02 UTC

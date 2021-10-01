@@ -11,7 +11,7 @@ subroutine fit_cvam_model( &
      dim_vec_est, estimate_info, estimate_var_info, &
      ctrl_mcmc_int, ctrl_mcmc_real, dim_vec_mcmc, &
      prob, beta, beta_hat, vhat_beta_rwm, &
-     iter, converged, max_diff, loglik, logP, lambda, &
+     iter, converged, max_diff, loglik_logP, lambda, &
      freq, freq_mean, freq_int, &
      score, vhat_beta, prob_mean, beta_mean, beta_cov_mat, &
      total_freq_use_prior, total_freq_use_data_int, &
@@ -19,7 +19,7 @@ subroutine fit_cvam_model( &
      packed_estimates, packed_estimates_mean, packed_SEs, &
      beta_series, prob_series, logp_series, imputed_freq_int, &
      packed_estimates_series, &
-     n_iter_actual, n_sample_actual, n_imp_actual, mh_accept_rate, &
+     n_actual, mh_accept_rate, &
      start_logP, &
      status, msg_len_max, msg_codes, msg_len_actual )
    !#############################################################
@@ -67,8 +67,7 @@ subroutine fit_cvam_model( &
    integer(kind=our_int), intent(out) :: iter
    integer(kind=our_int), intent(out) :: converged
    real(kind=our_dble), intent(out) :: max_diff
-   real(kind=our_dble), intent(out) :: loglik( dim_vec(8) )
-   real(kind=our_dble), intent(out) :: logP( dim_vec(8) )
+   real(kind=our_dble), intent(out) :: loglik_logP( dim_vec(8), 2 )
    real(kind=our_dble), intent(out) :: lambda( dim_vec(6) )
    real(kind=our_dble), intent(out) :: freq( dim_vec(4) )
    real(kind=our_dble), intent(out) :: freq_mean( dim_vec(4) )
@@ -93,9 +92,7 @@ subroutine fit_cvam_model( &
         imputed_freq_int( dim_vec(4), dim_vec_mcmc(3) )
    real(kind=our_dble), intent(out) :: &
         packed_estimates_series( dim_vec_mcmc(1), dim_vec_est(3) )
-   integer(kind=our_int), intent(out) :: n_iter_actual
-   integer(kind=our_int), intent(out) :: n_sample_actual
-   integer(kind=our_int), intent(out) :: n_imp_actual
+   integer(kind=our_int), intent(out) :: n_actual(3)
    real(kind=our_dble), intent(out) :: mh_accept_rate
    real(kind=our_dble), intent(out) :: start_logP
    ! messaging outputs
@@ -146,14 +143,18 @@ subroutine fit_cvam_model( &
         prob, beta, beta_hat, vhat_beta_rwm, &
         work, err, &
         iter, converged_logical, max_diff, &
-        loglik, logP, lambda, freq, freq_mean, freq_int, &
+        loglik_logP(:,1), loglik_logP(:,2), &
+        lambda, freq, freq_mean, freq_int, &
         score, vhat_beta, prob_mean, beta_mean, beta_cov_mat, &
         total_freq_use_prior, total_freq_use_data_int, &
         degrees_of_freedom, &
         packed_estimates, packed_estimates_mean, packed_SEs, &
         beta_series, prob_series, logp_series, imputed_freq_int, &
         packed_estimates_series, &
-        n_iter_actual, n_sample_actual, n_imp_actual, mh_accept_rate, &
+        n_actual(1), & ! n_iter_actual
+        n_actual(2), & ! n_sample_actual
+        n_actual(3), & ! n_imp_actual
+        mh_accept_rate, &
         start_logP &
         ) == RETURN_FAIL ) goto 800
    !
@@ -554,4 +555,170 @@ subroutine cvam_lik( &
    ijunk = nullify_workspace_type_cvam( work, err )
    ijunk = put_randgen_state_R(err)
  end subroutine cvam_lik
+!#####################################################################
+subroutine cvam_mlogit( n, p, r, x, y, baseline, iter_max, criterion, &
+     iter, converged_int, loglik, &
+     score, hess, beta, beta_vec, vhat_beta_vec, pi_mat, &
+     status, msg_len_max, msg_codes, msg_len_actual )
+   !#############################################################
+   ! This is a wrapper function for run_mlogit
+   ! status = 0 means everything ran OK, or run was aborted for
+   !    some reason (see msg)
+   ! Other value of status indicates a fatal error.
+   !#############################################################
+   use error_handler
+   use program_constants
+   use dynalloc
+   use math_R
+   use cvam_engine
+   implicit none
+   ! declare input arguments
+   integer(kind=our_int), intent(in) :: n
+   integer(kind=our_int), intent(in) :: p
+   integer(kind=our_int), intent(in) :: r
+   real(kind=our_dble), intent(in) :: x(n,p)
+   real(kind=our_dble), intent(in) :: y(n,r)
+   integer(kind=our_int), intent(in) :: baseline
+   integer(kind=our_int), intent(in) :: iter_max
+   real(kind=our_dble), intent(in) :: criterion
+   ! outputs
+   integer(kind=our_int), intent(out) :: iter 
+   integer(kind=our_int), intent(out) :: converged_int
+   real(kind=our_dble), intent(out) :: loglik
+   real(kind=our_dble), intent(out) :: score( p*(r-1) )
+   real(kind=our_dble), intent(out) :: hess( p*(r-1), p*(r-1) )
+   real(kind=our_dble), intent(out) :: beta(p,r)
+   real(kind=our_dble), intent(out) :: beta_vec( p*(r-1) )
+   real(kind=our_dble), intent(out) :: vhat_beta_vec( p*(r-1), p*(r-1) )
+   real(kind=our_dble), intent(out) :: pi_mat(n,r)
+   ! messaging outputs
+   integer(kind=our_int), intent(out) :: status
+   integer(kind=our_int), intent(in) :: msg_len_max
+   integer(kind=our_int), intent(out) :: msg_codes( msg_len_max, 17 )
+   integer(kind=our_int), intent(out) :: msg_len_actual
+   ! declare locals
+   type(error_type) :: err
+   ! begin
+   status = 1
+   call err_reset(err)
+   if( run_mlogit( n, p, r, x, y, baseline, iter_max, criterion, &
+        iter, converged_int, loglik, score, hess, &
+        beta, beta_vec, vhat_beta_vec, pi_mat, &
+        err ) == RETURN_FAIL ) goto 800
+   ! normal exit
+   status = 0
+800 continue
+   ! report message if present
+   msg_codes(:,:) = 0
+   msg_len_actual = 0
+   if( err_msg_present(err) ) call err_get_codes(err, &
+        msg_codes, msg_len_actual)
+   ! cleanup
+   call err_reset(err)
+ end subroutine cvam_mlogit
+!#####################################################################
+subroutine cvam_mlogit_loglik_derivs( n, p, r, x, y, baseline, &
+     beta_vec, loglik, score, hess, &
+     status, msg_len_max, msg_codes, msg_len_actual )
+   !#############################################################
+   ! This is a wrapper function for run_mlogit_loglik_derivs
+   ! status = 0 means everything ran OK, or run was aborted for
+   !    some reason (see msg)
+   ! Other value of status indicates a fatal error.
+   !#############################################################
+   use error_handler
+   use program_constants
+   use dynalloc
+   use math_R
+   use cvam_engine
+   implicit none
+   ! declare input arguments
+   integer(kind=our_int), intent(in) :: n
+   integer(kind=our_int), intent(in) :: p
+   integer(kind=our_int), intent(in) :: r
+   real(kind=our_dble), intent(in) :: x(n,p)
+   real(kind=our_dble), intent(in) :: y(n,r)
+   integer(kind=our_int), intent(in) :: baseline
+   real(kind=our_dble), intent(in) :: beta_vec( p*(r-1) )
+   ! outputs
+   real(kind=our_dble), intent(out) :: loglik
+   real(kind=our_dble), intent(out) :: score( p*(r-1) )
+   real(kind=our_dble), intent(out) :: hess( p*(r-1), p*(r-1) )
+   ! messaging outputs
+   integer(kind=our_int), intent(out) :: status
+   integer(kind=our_int), intent(in) :: msg_len_max
+   integer(kind=our_int), intent(out) :: msg_codes( msg_len_max, 17 )
+   integer(kind=our_int), intent(out) :: msg_len_actual
+   ! declare locals
+   type(error_type) :: err
+   ! begin
+   status = 1
+   call err_reset(err)
+   if( run_mlogit_loglik_derivs( n, p, r, x, y, baseline, beta_vec, &
+        loglik, score, hess, err ) == RETURN_FAIL ) goto 800
+   ! normal exit
+   status = 0
+800 continue
+   ! report message if present
+   msg_codes(:,:) = 0
+   msg_len_actual = 0
+   if( err_msg_present(err) ) call err_get_codes(err, &
+        msg_codes, msg_len_actual)
+   ! cleanup
+   call err_reset(err)
+ end subroutine cvam_mlogit_loglik_derivs
+!#####################################################################
+subroutine cvam_lcprev_loglik_derivs( n, p, r, x, lik_mat, &
+     freq, baseline, beta_vec, &
+     loglik, score, hess, &
+     status, msg_len_max, msg_codes, msg_len_actual )
+   !#############################################################
+   ! This is a wrapper function for run_mlogit_loglik_derivs
+   ! status = 0 means everything ran OK, or run was aborted for
+   !    some reason (see msg)
+   ! Other value of status indicates a fatal error.
+   !#############################################################
+   use error_handler
+   use program_constants
+   use dynalloc
+   use math_R
+   use cvam_engine
+   implicit none
+   ! declare input arguments
+   integer(kind=our_int), intent(in) :: n
+   integer(kind=our_int), intent(in) :: p
+   integer(kind=our_int), intent(in) :: r
+   real(kind=our_dble), intent(in) :: x(n,p)
+   real(kind=our_dble), intent(in) :: lik_mat(n,r)
+   real(kind=our_dble), intent(in) :: freq(n)
+   integer(kind=our_int), intent(in) :: baseline
+   real(kind=our_dble), intent(in) :: beta_vec( p*(r-1) )
+   ! outputs
+   real(kind=our_dble), intent(out) :: loglik
+   real(kind=our_dble), intent(out) :: score( p*(r-1) )
+   real(kind=our_dble), intent(out) :: hess( p*(r-1), p*(r-1) )
+   ! messaging outputs
+   integer(kind=our_int), intent(out) :: status
+   integer(kind=our_int), intent(in) :: msg_len_max
+   integer(kind=our_int), intent(out) :: msg_codes( msg_len_max, 17 )
+   integer(kind=our_int), intent(out) :: msg_len_actual
+   ! declare locals
+   type(error_type) :: err
+   ! begin
+   status = 1
+   call err_reset(err)
+   if( run_lcprev_loglik_derivs( n, p, r, x, lik_mat, freq, &
+        baseline, beta_vec, &
+        loglik, score, hess, err ) == RETURN_FAIL ) goto 800
+   ! normal exit
+   status = 0
+800 continue
+   ! report message if present
+   msg_codes(:,:) = 0
+   msg_len_actual = 0
+   if( err_msg_present(err) ) call err_get_codes(err, &
+        msg_codes, msg_len_actual)
+   ! cleanup
+   call err_reset(err)
+ end subroutine cvam_lcprev_loglik_derivs
 !#####################################################################

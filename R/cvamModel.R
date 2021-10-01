@@ -709,8 +709,7 @@ cvam.formula <- function( obj, data, freq, prior=cvamPrior(),
       iter = integer(1L),
       convergedInt = integer(1L),
       maxDiff = numeric(1L),
-      loglikPadded = numeric(maxIter),
-      logPPadded = numeric(maxIter),
+      logliklogPPadded = matrix(numeric(1L), maxIter, 2L),
       lambda = numeric( length(beta) ),
       freq = numeric( NROW(mfTrue) ),
       freqMean = numeric( NROW(mfTrue) ),
@@ -731,9 +730,7 @@ cvam.formula <- function( obj, data, freq, prior=cvamPrior(),
       logPSeries = logPSeries,
       imputedFreqInt = imputedFreqInt,
       packedEstimatesSeries = packedEstimatesSeries,
-      nIterActual = integer(1L),
-      nSampleActual = integer(1L),
-      nImpActual = integer(1L),
+      nActual = integer(3L),
       mhAcceptRate = numeric(1L),
       startLogP = numeric(1L),
       # messaging
@@ -761,6 +758,10 @@ cvam.formula <- function( obj, data, freq, prior=cvamPrior(),
        ( ! tmp$converged ) ) warning( gettextf(
        "Procedure failed to converge by iteration %i", tmp$iter ), 
        domain = NA )
+   #--------------------------------------------
+   tmp$nIterActual <- tmp$nActual[1L]
+   tmp$nSampleActual <- tmp$nActual[2L]
+   tmp$nImpActual <- tmp$nActual[3L]
    #--------------------------------------------
    if( length(est) == 0L ) {
       est <- NULL }
@@ -814,10 +815,12 @@ cvam.formula <- function( obj, data, freq, prior=cvamPrior(),
    tmp$atMode <- ( method == "EM" ) & as.logical( tmp$convergedInt )
    tmp$converged <- if( method == "EM")
       as.logical( tmp$convergedInt ) else NULL
+   loglikPadded <- tmp$logliklogPPadded[,1L]
+   logPPadded <- tmp$logliklogPPadded[,2L]
    tmp$loglik <- if( tmp$iter > 0L ) 
-      tmp$loglikPadded[1:tmp$iter] else numeric()
+      loglikPadded[1:tmp$iter] else numeric()
    tmp$logP <- if( tmp$iter > 0L ) 
-      tmp$logPPadded[1:tmp$iter] else numeric()
+      logPPadded[1:tmp$iter] else numeric()
    mfTrue$freq <- if( method == "EM" ) tmp$freq else tmp$freqMean
    tmp$mfTrue <- mfTrue
    tmp$mfSeen <- mfSeen
@@ -1164,8 +1167,7 @@ cvam.cvam <- function(obj, method=obj$method, control=NULL, startVal=NULL,
       iter = integer(1L),
       convergedInt = integer(1L),
       maxDiff = numeric(1L),
-      loglikPadded = numeric(maxIter),
-      logPPadded = numeric(maxIter),
+      logliklogPPadded = matrix(numeric(1L), maxIter, 2L),
       lambda = numeric( length(beta) ),
       freq = numeric( NROW(mfTrue) ),
       freqMean = numeric( NROW(mfTrue) ),
@@ -1186,9 +1188,7 @@ cvam.cvam <- function(obj, method=obj$method, control=NULL, startVal=NULL,
       logPSeries = logPSeries,
       imputedFreqInt = imputedFreqInt,
       packedEstimatesSeries = packedEstimatesSeries,
-      nIterActual = integer(1L),
-      nSampleActual = integer(1L),
-      nImpActual = integer(1L),
+      nActual = integer(3L),
       mhAcceptRate = numeric(1L),
       startLogP = numeric(1L),
       # messaging
@@ -1216,6 +1216,10 @@ cvam.cvam <- function(obj, method=obj$method, control=NULL, startVal=NULL,
        ( ! tmp$converged ) ) warning( gettextf(
        "Procedure failed to converge by iteration %i", tmp$iter ), 
        domain = NA )
+   #--------------------------------------------
+   tmp$nIterActual <- tmp$nActual[1L]
+   tmp$nSampleActual <- tmp$nActual[2L]
+   tmp$nImpActual <- tmp$nActual[3L]
    #--------------------------------------------
    if( length(est) == 0L ) {
       est <- NULL }
@@ -1269,10 +1273,12 @@ cvam.cvam <- function(obj, method=obj$method, control=NULL, startVal=NULL,
    tmp$atMode <- ( method == "EM" ) & as.logical( tmp$convergedInt )
    tmp$converged <- if( method == "EM")
       as.logical( tmp$convergedInt ) else NULL
+   loglikPadded <- tmp$logliklogPPadded[,1L]
+   logPPadded <- tmp$logliklogPPadded[,2L]
    tmp$loglik <- if( tmp$iter > 0L ) 
-      tmp$loglikPadded[1:tmp$iter] else numeric()
+      loglikPadded[1:tmp$iter] else numeric()
    tmp$logP <- if( tmp$iter > 0L ) 
-      tmp$logPPadded[1:tmp$iter] else numeric()
+      logPPadded[1:tmp$iter] else numeric()
    mfTrue$freq <- if( method == "EM" ) tmp$freq else tmp$freqMean
    tmp$mfTrue <- mfTrue
    mfSeen$freq <- freqSeen
@@ -2121,7 +2127,7 @@ cvamPredict <- function( form, obj, data, freq, meanSeries = TRUE, sep="." ){
    stopifnot( inherits(obj, ".cvamPredictRequest") )
    stopifnot( inherits(model, ".cvamModel") )
    aV <- attr(obj, "vars")
-   levs <- if( length(aV) == 1L ) levels( predF0[[1L]] ) else
+   levs <- if( length(aV) == 1L ) levels( predF0[[aV]] ) else
       levels( interaction( predF0[aV], sep=sep ) )
    pred <- matrix( numeric(1L), NROW(predF), length(levs) )
    rownames(pred) <- rownames(predF)

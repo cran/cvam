@@ -4,6 +4,9 @@
 "advance_cell_random_part_estimate                                       ",&
 "advance_to_next_cell                                                    ",&
 "advance_to_next_cell_2                                                  ",&
+"check_lcprev_loglik_derivs_args                                         ",&
+"check_mlogit_args                                                       ",&
+"check_mlogit_loglik_derivs_args                                         ",&
 "cholesky_saxpy                                                          ",&
 "compute_center_and_scale_beta_da                                        ",&
 "compute_estimate_SEs                                                    ",&
@@ -16,8 +19,11 @@
 "compute_loglik_logprior                                                 ",&
 "compute_ls_fit                                                          ",&
 "compute_mu_from_beta                                                    ",&
+"compute_pi_mat                                                          ",&
 "compute_predictions                                                     ",&
 "compute_scale_rwm                                                       ",&
+"compute_score_hess_lcprev                                               ",&
+"compute_score_hess_mlogit                                               ",&
 "compute_score_hessian_mstep                                             ",&
 "compute_vhat_beta                                                       ",&
 "create_data_and_prior_use_objects                                       ",&
@@ -25,6 +31,7 @@
 "create_lik_objects                                                      ",&
 "create_mcmc_objects                                                     ",&
 "create_model_fitting_objects                                            ",&
+"create_nvec                                                             ",&
 "create_predict_objects                                                  ",&
 "dbeta_R                                                                 ",&
 "dbinom_R                                                                ",&
@@ -161,7 +168,10 @@
 "run_estep_with_derivs                                                   ",&
 "run_istep                                                               ",&
 "run_istep_microdata                                                     ",&
+"run_lcprev_loglik_derivs                                                ",&
 "run_mh_step_beta_da                                                     ",&
+"run_mlogit                                                              ",&
+"run_mlogit_loglik_derivs                                                ",&
 "run_mstep_log_linear                                                    ",&
 "run_rwm_log_linear                                                      ",&
 "run_rwm_step_beta                                                       ",&

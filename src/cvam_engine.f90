@@ -19,7 +19,8 @@ module cvam_engine
    public :: nullify_workspace_type_cvam, run_cvam_model, &
         run_cvam_estimate_em, run_cvam_predict_em, &
         run_cvam_impute_freq, run_cvam_impute_microdata, &
-        run_cvam_lik
+        run_cvam_lik, run_mlogit, run_mlogit_loglik_derivs, &
+        run_lcprev_loglik_derivs
    ! parameters private to this module
    real(kind=our_dble), parameter :: &
         log_huge = log( huge( real(0,kind=our_dble) ) ), &
@@ -7626,6 +7627,7 @@ module cvam_engine
       ! normal exit
       answer = RETURN_SUCCESS
       goto 999
+      ! error traps
 20    call err_handle(err, 1, &
             comment = "There is no log-linear model" )
       goto 800
@@ -7634,6 +7636,827 @@ module cvam_engine
       ! cleanup
 999   continue
     end function draw_approx_bayes_beta
+    !##################################################################
+    integer(kind=our_int) function run_mlogit( n, p, r, x, y, &
+         baseline, iter_max, criterion, &
+         iter, converged_int, loglik, score, hess, &
+         beta, beta_vec, vhat_beta_vec, pi_mat, err ) result(answer)
+      ! fits a baseline-category logit model using Newton-Raphson
+      implicit none
+      ! inputs
+      integer(kind=our_int), intent(in) :: n   ! number of observations
+      integer(kind=our_int), intent(in) :: p   ! columns of x
+      integer(kind=our_int), intent(in) :: r   ! response categories
+      real(kind=our_dble), intent(in) :: x(:,:)
+      real(kind=our_dble), intent(in) :: y(:,:)
+      integer(kind=our_int), intent(in) :: baseline   ! baseline category
+      integer(kind=our_int), intent(in) :: iter_max
+      real(kind=our_dble), intent(in) :: criterion
+      ! outputs
+      integer(kind=our_int), intent(out) :: iter
+      integer(kind=our_int), intent(out) :: converged_int
+      real(kind=our_dble), intent(out) :: loglik
+      real(kind=our_dble), intent(out) :: score(:)
+      real(kind=our_dble), intent(out) :: hess(:,:)
+      real(kind=our_dble), intent(out) :: beta(:,:)
+      real(kind=our_dble), intent(out) :: beta_vec(:)
+      real(kind=our_dble), intent(out) :: vhat_beta_vec(:,:)
+      real(kind=our_dble), intent(out) :: pi_mat(:,:)
+      ! declare workspaces
+      type(error_type), intent(inout) :: err
+      ! declare locals
+      real(kind=our_dble), allocatable :: wkrA(:), wkrB(:), &
+           wkprA(:), wkprprA(:,:), nvec(:), beta_vec_new(:)
+      real(kind=our_dble) :: max_diff, sum
+      integer(kind=our_int) :: status, i, j, k, jj
+      logical :: converged, aborted
+      character(len=*), parameter :: &
+           subname = "run_mlogit"
+      ! begin
+      answer = RETURN_FAIL
+      !####
+      if( check_mlogit_args( n, p, r, x, y, &
+         baseline, iter_max, criterion, &
+         score, hess, &
+         beta, beta_vec, vhat_beta_vec, pi_mat, &
+         err ) == RETURN_FAIL ) goto 800
+      allocate( wkrA(r), wkrB(r), &
+           wkprA( p*(r-1) ), wkprprA( p*(r-1), p*(r-1) ), &
+           nvec(n), beta_vec_new( p*(r-1) ), &
+           stat=status )
+      if( status /= 0 ) goto 100
+      if( create_nvec( y, nvec, err ) == RETURN_FAIL ) goto 800
+      beta_vec_new(:) = 0.D0
+      iter = 0
+      converged = .false.
+      converged_int = 0
+      do
+         if( converged ) exit
+         if( iter >= iter_max ) exit 
+         aborted = .true.  ! set to .false. at end of iteration
+         iter = iter + 1
+         beta_vec(:) = beta_vec_new(:)
+         if( compute_score_hess_mlogit(x, y, baseline, nvec, &
+              beta_vec, loglik, score, wkprprA, pi_mat, &
+              err, wkrA, wkrB ) == RETURN_FAIL ) goto 20
+         hess(:,:) = - wkprprA(:,:)
+         if( cholesky_in_place(wkprprA, err ) == RETURN_FAIL ) then
+            call err_handle(err, 1, &
+                 comment = "Hessian not neg-definite" )
+            goto 20
+         end if
+         if( invert_lower(wkprprA, err ) == RETURN_FAIL ) then
+            call err_handle(err, 1, &
+                 comment = "Hessian apparently singular" )
+            goto 20
+         end if
+         if( premult_lower_by_transpose( wkprprA, &
+              vhat_beta_vec, err) == RETURN_FAIL ) goto 800
+         do j = 1, size(beta_vec)
+            sum = 0.D0
+            do k = 1, size(beta_vec)
+               sum = sum + vhat_beta_vec(j,k) * score(k)
+            end do
+            beta_vec_new(j) = beta_vec(j) + sum
+         end do
+         !
+         max_diff = 0.D0
+         do i = 1, size(beta_vec)
+            max_diff = max( max_diff, &
+                 abs( beta_vec_new(i) - beta_vec(i) ) )
+         end do
+         if( max_diff <= criterion ) then
+            converged = .true.
+            converged_int = 1
+         end if
+         aborted = .false.
+      end do
+20    continue
+      if( aborted ) then
+         call err_handle(err, 1, &
+              comment = "Newton-Raphson aborted" )
+         call err_handle(err, 5, iiter = iter )
+      end if
+      if( .not. converged ) then
+         call err_handle(err, 1, &
+              comment = "Newton-Raphson failed to converge by" )
+         call err_handle(err, 5, iiter = iter )
+      end if
+      if( aborted .or. ( .not. converged ) ) then
+         call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      end if
+      !
+      beta_vec(:) = beta_vec_new(:)
+      beta(:,baseline) = 0.D0 
+      jj = 0
+      do j = 1, r
+         if(j == baseline) cycle
+         do k = 1, p
+            jj = jj + 1
+            beta(k,j) = beta_vec_new(jj)
+         end do
+      end do
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+100   call err_handle(err, 1, &
+            comment = "Unable to allocate array" )
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+      if( allocated(wkrA) ) deallocate(wkrA)
+      if( allocated(wkrB) ) deallocate(wkrB)
+      if( allocated(wkprA) ) deallocate(wkprA)
+      if( allocated(wkprprA) ) deallocate(wkprprA)
+      if( allocated(nvec) ) deallocate(nvec)
+      if( allocated(beta_vec_new) ) deallocate(beta_vec_new)
+    end function run_mlogit
+    !##################################################################
+    integer(kind=our_int) function check_mlogit_args( n, p, r, x, y, &
+         baseline, iter_max, criterion, score, hess, &
+         beta, beta_vec, vhat_beta_vec, pi_mat, err ) result(answer)
+      implicit none
+      ! inputs
+      integer(kind=our_int), intent(in) :: n   ! number of observations
+      integer(kind=our_int), intent(in) :: p   ! columns of x
+      integer(kind=our_int), intent(in) :: r   ! response categories
+      real(kind=our_dble), intent(in) :: x(:,:)
+      real(kind=our_dble), intent(in) :: y(:,:)
+      integer(kind=our_int), intent(in) :: baseline   ! baseline category
+      integer(kind=our_int), intent(in) :: iter_max
+      real(kind=our_dble), intent(in) :: criterion
+      ! outputs
+      real(kind=our_dble), intent(out) :: score(:)
+      real(kind=our_dble), intent(out) :: hess(:,:)
+      real(kind=our_dble), intent(out) :: beta(:,:)
+      real(kind=our_dble), intent(out) :: beta_vec(:)
+      real(kind=our_dble), intent(out) :: vhat_beta_vec(:,:)
+      real(kind=our_dble), intent(out) :: pi_mat(:,:)
+      ! declare workspaces
+      type(error_type), intent(inout) :: err
+      ! declare locals
+      character(len=*), parameter :: &
+           subname = "check_mlogit_args"
+      ! begin
+      answer = RETURN_FAIL
+      !####
+      if( ( size(x,1) /= n ) .or. ( size(x,2) /= p ) ) goto 20
+      if( ( size(y,1) /= n ) .or. ( size(y,2) /= r ) ) goto 30
+      if( ( baseline < 1 ) .or. ( baseline > r ) ) goto 40
+      if( iter_max < 0 ) goto 50
+      if( criterion <= 0.D0 ) goto 60
+      if( size(score) /= p*(r-1) ) goto 70
+      if( size(hess,1) /= p*(r-1) ) goto 80
+      if( size(hess,2) /= p*(r-1) ) goto 80
+      if( ( size(beta,1) /= p ) .or. ( size(beta,2) /= r ) )  goto 90
+      if( size(beta_vec) /= p*(r-1) ) goto 100
+      if( size(vhat_beta_vec,1) /= p*(r-1) ) goto 110
+      if( size(vhat_beta_vec,2) /= p*(r-1) ) goto 110
+      if( ( size(pi_mat,1) /= n ) .or. ( size(pi_mat,2) /= r ) ) goto 120
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+20    call err_handle(err, 1, &
+            comment = "Argument x has incorrect size" )
+      goto 800
+30    call err_handle(err, 1, &
+            comment = "Argument y has incorrect size" )
+      goto 800
+40    call err_handle(err, 1, &
+            comment = "Argument baseline is out of bounds" )
+      goto 800
+50    call err_handle(err, 1, &
+            comment = "Argument iter_max is negative" )
+      goto 800
+60    call err_handle(err, 1, &
+            comment = "Argument criterion is not positive" )
+      goto 800
+70    call err_handle(err, 1, &
+            comment = "Argument score has incorrect size" )
+      goto 800
+80    call err_handle(err, 1, &
+            comment = "Argument hess has incorrect size" )
+      goto 800
+90    call err_handle(err, 1, &
+            comment = "Argument beta has incorrect size" )
+      goto 800
+100   call err_handle(err, 1, &
+            comment = "Argument beta_vec has incorrect size" )
+      goto 800
+110   call err_handle(err, 1, &
+            comment = "Argument vhat_beta_vec has incorrect size" )
+      goto 800
+120   call err_handle(err, 1, &
+            comment = "Argument pi_mat has incorrect size" )
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+    end function check_mlogit_args
+    !##################################################################
+    integer(kind=our_int) function create_nvec( y, nvec, err ) &
+         result(answer)
+      implicit none
+      ! inputs
+      real(kind=our_dble), intent(in) :: y(:,:)
+      ! outputs
+      real(kind=our_dble), intent(out) :: nvec(:)
+      ! declare workspaces
+      type(error_type), intent(inout) :: err
+      ! declare locals
+      integer(kind=our_int) :: i, j
+      real(kind=our_dble) :: sum
+      character(len=*), parameter :: &
+           subname = "create_nvec"
+      ! begin
+      answer = RETURN_FAIL
+      !####
+      do i = 1, size(y,1)
+         sum = 0.D0
+         do j = 1, size(y,2)
+            if( y(i,j) < 0.D0 ) goto 100
+            sum = sum + y(i,j)
+         end do
+         nvec(i) = sum
+      end do
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+100   call err_handle(err, 1, &
+            comment = "Negative value in response matrix y" )
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+    end function create_nvec
+    !##################################################################
+    integer(kind=our_int) function compute_score_hess_mlogit( &
+         x, y, baseline, nvec, beta_vec, loglik, &
+         score, neg_hess, pi_mat, &
+         err, wkrA, wkrB ) &
+         result(answer)
+      implicit none
+      ! inputs
+      real(kind=our_dble), intent(in) :: x(:,:)
+      real(kind=our_dble), intent(in) :: y(:,:)
+      integer(kind=our_int), intent(in) :: baseline
+      real(kind=our_dble), intent(in) :: nvec(:)
+      real(kind=our_dble), intent(in) :: beta_vec(:)
+      ! outputs
+      real(kind=our_dble), intent(out) :: loglik
+      real(kind=our_dble), intent(out) :: score(:)
+      real(kind=our_dble), intent(out) :: neg_hess(:,:)
+      real(kind=our_dble), intent(out) :: pi_mat(:,:)
+      ! declare workspaces
+      type(error_type), intent(inout) :: err
+      real(kind=our_dble), intent(inout) :: wkrA(:)
+      real(kind=our_dble), intent(inout) :: wkrB(:)
+      ! declare locals
+      integer(kind=our_int) :: n, p, r, i, j, jj, k, kk, el, kprime, m
+      real(kind=our_dble) :: q1, q2, q3
+      character(len=*), parameter :: &
+           subname = "compute_score_hess_mlogit"
+      ! begin
+      answer = RETURN_FAIL
+      !####
+      n = size(x,1)
+      p = size(x,2)
+      r = size(y,2)
+      loglik = 0.D0
+      score(:) = 0.D0
+      neg_hess(:,:) = 0.D0
+      if( compute_pi_mat( x, baseline, beta_vec, pi_mat, err, wkrA, wkrB ) &
+           == RETURN_FAIL ) goto 800
+      do i = 1, n
+         ! increment loglik
+         do j = 1, r
+            if( y(i,j) > 0.D0 ) then
+               if( pi_mat(i,j) <= 0.D0 ) goto 200
+               loglik = loglik + y(i,j) * log( pi_mat(i,j) )
+            end if
+         end do
+         !### accumulate derivatives
+         jj = 0
+         do k = 1, r
+            if(k == baseline) cycle
+            !### first derivatives wrt beta, and minus second
+            !### derivatives wrt beta, diagonal blocks
+            q1 = y(i,k) - nvec(i) * pi_mat(i,k)
+            q2 = nvec(i) * pi_mat(i,k) * ( 1.D0 - pi_mat(i,k) )
+            do el = 1, p
+               jj = jj + 1
+               score(jj) = score(jj) + q1 * x(i,el)
+               kk = jj - 1
+               do m = el, p
+                  kk = kk + 1
+                  neg_hess(jj,kk)  =  neg_hess(jj,kk) + q2 * x(i,el) * x(i,m)
+                  neg_hess(kk,jj)  =  neg_hess(jj,kk)
+               end do
+               !### minus 2nd derivatives, off-diagonal blocks
+               do kprime = (k+1), r
+                  if( kprime /=  baseline ) then
+                     q3 = - nvec(i) * pi_mat(i,k) * pi_mat(i,kprime)
+                     do m = 1, p
+                        kk = kk + 1
+                        neg_hess(jj,kk) = neg_hess(jj,kk) + &
+                             q3 * x(i,el) * x(i,m)
+                        neg_hess(kk,jj) = neg_hess(jj,kk)
+                     end do
+                  end if
+               end do
+            end do
+         end do
+      end do
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+200   call err_handle(err, 1, &
+            comment = "Attempted logarithn of non-positive number" )
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+    end function compute_score_hess_mlogit
+    !##################################################################
+    integer(kind=our_int) function compute_pi_mat( x, baseline, &
+         beta_vec, pi_mat, err, wkrA, wkrB ) result(answer)
+      implicit none
+      ! inputs
+      real(kind=our_dble), intent(in) :: x(:,:)
+      integer(kind=our_int), intent(in) :: baseline
+      real(kind=our_dble), intent(in) :: beta_vec(:)
+      ! outputs
+      real(kind=our_dble), intent(out) :: pi_mat(:,:)
+      ! declare workspaces
+      type(error_type), intent(inout) :: err
+      real(kind=our_dble), intent(inout) :: wkrA(:)
+      real(kind=our_dble), intent(inout) :: wkrB(:)
+      ! declare locals
+      integer(kind=our_int) :: n, p, r, i, j, posn, k
+      real(kind=our_dble) :: sum, eta_max
+      character(len=*), parameter :: &
+           subname = "compute_pi_mat"
+      ! begin
+      answer = RETURN_FAIL
+      !####
+      n = size(x,1)
+      p = size(x,2)
+      r = size(pi_mat,2)
+      do i = 1, n
+         posn = 0
+         do j = 1, r
+            if( j == baseline ) then
+               wkrA(j) = 0.D0
+               cycle
+            end if
+            sum = 0.D0
+            do k = 1, p
+               posn = posn + 1
+               sum = sum + x(i,k) * beta_vec(posn)
+            end do
+            wkrA(j) = sum
+         end do
+         eta_max = log_tiny
+         do j = 1, r
+            eta_max = max(eta_max, wkrA(j))
+         end do
+         wkrA(:) = wkrA(:) - eta_max
+         sum = 0.D0
+         do j = 1, r
+            if( wkrA(j) < log_tiny ) then
+               wkrB(j) = 0.D0
+            else if( wkrA(j) > log_huge ) then
+               goto 100
+            else
+               wkrB(j) = exp( wkrA(j) )
+            end if
+            sum = sum + wkrB(j)
+         end do
+         if( sum == 0.D0 ) goto 200
+         do j = 1, r
+            pi_mat(i,j) = wkrB(j) / sum
+         end do
+      end do
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+100   call err_handle(err, 1, &
+            comment = "Overflow; fitted value became too large" )
+      call err_handle(err, 3, iobs=i)
+      goto 800
+200   call err_handle(err, 1, &
+            comment = "Attempted division by zero" )
+      call err_handle(err, 3, iobs=i)
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+    end function compute_pi_mat
+    !##################################################################
+    integer(kind=our_int) function run_mlogit_loglik_derivs( n, p, r, &
+         x, y, baseline, beta_vec, &
+         loglik, score, hess, err ) result(answer)
+      implicit none
+      ! inputs
+      integer(kind=our_int), intent(in) :: n   ! number of observations
+      integer(kind=our_int), intent(in) :: p   ! columns of x
+      integer(kind=our_int), intent(in) :: r   ! response categories
+      real(kind=our_dble), intent(in) :: x(:,:)
+      real(kind=our_dble), intent(in) :: y(:,:)
+      integer(kind=our_int), intent(in) :: baseline   ! baseline category
+      real(kind=our_dble), intent(in) :: beta_vec(:)
+      ! outputs
+      real(kind=our_dble), intent(out) :: loglik
+      real(kind=our_dble), intent(out) :: score(:)
+      real(kind=our_dble), intent(out) :: hess(:,:)
+!      real(kind=our_dble), intent(out) :: neg_hess_inv(:,:)
+      ! declare workspaces
+      type(error_type), intent(inout) :: err
+      ! declare locals
+      real(kind=our_dble), allocatable :: wkrA(:), wkrB(:), &
+           wkprprA(:,:), nvec(:), pi_mat(:,:)
+      integer(kind=our_int) :: status
+      character(len=*), parameter :: &
+           subname = "run_mlogit_loglik_derivs"
+      ! begin
+      answer = RETURN_FAIL
+      !####
+      if( check_mlogit_loglik_derivs_args( n, p, r, x, y, &
+         baseline, beta_vec, score, hess, &
+         err ) == RETURN_FAIL ) goto 800
+      allocate( wkrA(r), wkrB(r), &
+           wkprprA( p*(r-1), p*(r-1) ), &
+           nvec(n), pi_mat(n,r), &
+           stat=status )
+      if( status /= 0 ) goto 100
+      if( create_nvec( y, nvec, err ) == RETURN_FAIL ) goto 800
+      if( compute_score_hess_mlogit(x, y, baseline, nvec, &
+           beta_vec, loglik, score, wkprprA, pi_mat, &
+           err, wkrA, wkrB ) == RETURN_FAIL ) goto 800
+      hess(:,:) = - wkprprA(:,:)
+!      neg_hess_inv(:,:) = 0.D0
+!      if( cholesky_in_place( wkprprA, err ) == RETURN_FAIL ) then
+!         call err_handle(err, 1, &
+!              comment = "Hessian matrix not neg-def" )
+!         goto 20
+!      end if
+!      if( invert_lower( wkprprA, err ) == RETURN_FAIL ) then
+!         call err_handle(err, 1, &
+!              comment = "Hessian matrix apparently singular" )
+!         goto 20
+!      end if
+!      if( premult_lower_by_transpose( wkprprA, neg_hess_inv, &
+!           err) == RETURN_FAIL ) goto 800
+!20    continue
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+100   call err_handle(err, 1, &
+            comment = "Unable to allocate array" )
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+      if( allocated(wkrA) ) deallocate(wkrA)
+      if( allocated(wkrB) ) deallocate(wkrB)
+      if( allocated(wkprprA) ) deallocate(wkprprA)
+      if( allocated(nvec) ) deallocate(nvec)
+      if( allocated(pi_mat) ) deallocate(pi_mat)
+    end function run_mlogit_loglik_derivs
+    !##################################################################
+    integer(kind=our_int) function check_mlogit_loglik_derivs_args( &
+         n, p, r, x, y, baseline, beta_vec, score, hess, &
+         err ) result(answer)
+      implicit none
+      ! inputs
+      integer(kind=our_int), intent(in) :: n   ! number of observations
+      integer(kind=our_int), intent(in) :: p   ! columns of x
+      integer(kind=our_int), intent(in) :: r   ! response categories
+      real(kind=our_dble), intent(in) :: x(:,:)
+      real(kind=our_dble), intent(in) :: y(:,:)
+      integer(kind=our_int), intent(in) :: baseline   ! baseline category
+      real(kind=our_dble), intent(in) :: beta_vec(:)
+      ! outputs
+      real(kind=our_dble), intent(out) :: score(:)
+      real(kind=our_dble), intent(out) :: hess(:,:)
+      ! declare workspaces
+      type(error_type), intent(inout) :: err
+      ! declare locals
+      character(len=*), parameter :: &
+           subname = "check_mlogit_loglik_derivs_args"
+      ! begin
+      answer = RETURN_FAIL
+      !####
+      if( ( size(x,1) /= n ) .or. ( size(x,2) /= p ) ) goto 20
+      if( ( size(y,1) /= n ) .or. ( size(y,2) /= r ) ) goto 30
+      if( ( baseline < 1 ) .or. ( baseline > r ) ) goto 40
+      if( size(score) /= p*(r-1) ) goto 70
+      if( size(hess,1) /= p*(r-1) ) goto 80
+      if( size(hess,2) /= p*(r-1) ) goto 80
+      if( size(beta_vec) /= p*(r-1) ) goto 100
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+20    call err_handle(err, 1, &
+            comment = "Argument x has incorrect size" )
+      goto 800
+30    call err_handle(err, 1, &
+            comment = "Argument y has incorrect size" )
+      goto 800
+40    call err_handle(err, 1, &
+            comment = "Argument baseline is out of bounds" )
+      goto 800
+70    call err_handle(err, 1, &
+            comment = "Argument score has incorrect size" )
+      goto 800
+80    call err_handle(err, 1, &
+            comment = "Argument hess has incorrect size" )
+      goto 800
+100   call err_handle(err, 1, &
+            comment = "Argument beta_vec has incorrect size" )
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+    end function check_mlogit_loglik_derivs_args
+    !##################################################################
+    integer(kind=our_int) function run_lcprev_loglik_derivs( n, p, r, &
+         x, lik_mat, freq, baseline, beta_vec, &
+         loglik, score, hess, err ) result(answer)
+      implicit none
+      ! inputs
+      integer(kind=our_int), intent(in) :: n   ! number of observations
+      integer(kind=our_int), intent(in) :: p   ! columns of x
+      integer(kind=our_int), intent(in) :: r   ! response categories
+      real(kind=our_dble), intent(in) :: x(:,:)
+      real(kind=our_dble), intent(in) :: lik_mat(:,:)
+      real(kind=our_dble), intent(in) :: freq(:)
+      integer(kind=our_int), intent(in) :: baseline   ! baseline category
+      real(kind=our_dble), intent(in) :: beta_vec(:)
+      ! outputs
+      real(kind=our_dble), intent(out) :: loglik
+      real(kind=our_dble), intent(out) :: score(:)
+      real(kind=our_dble), intent(out) :: hess(:,:)
+!      real(kind=our_dble), intent(out) :: neg_hess_inv(:,:)
+      ! declare workspaces
+      type(error_type), intent(inout) :: err
+      ! declare locals
+      real(kind=our_dble), allocatable :: wkrA(:), wkrB(:), &
+           wkprprA(:,:), pi_mat(:,:), pi_star(:,:)
+      integer(kind=our_int) :: status
+      character(len=*), parameter :: &
+           subname = "run_lcprev_loglik_derivs"
+      ! begin
+      answer = RETURN_FAIL
+      !####
+      if( check_lcprev_loglik_derivs_args( n, p, r, x, lik_mat, freq, &
+         baseline, beta_vec, score, hess, &
+         err ) == RETURN_FAIL ) goto 800
+      allocate( wkrA(r), wkrB(r), &
+           wkprprA( p*(r-1), p*(r-1) ), &
+           pi_mat(n,r), pi_star(n,r), &
+           stat=status )
+      if( status /= 0 ) goto 100
+      if( compute_score_hess_lcprev(x, lik_mat, baseline, freq, &
+           beta_vec, loglik, score, wkprprA, pi_mat, pi_star, &
+           err, wkrA, wkrB ) == RETURN_FAIL ) goto 800
+      hess(:,:) = - wkprprA(:,:)
+!      neg_hess_inv(:,:) = 0.D0
+!      if( cholesky_in_place( wkprprA, err ) == RETURN_FAIL ) then
+!         call err_handle(err, 1, &
+!              comment = "Hessian matrix not neg-def" )
+!         goto 20
+!      end if
+!      if( invert_lower( wkprprA, err ) == RETURN_FAIL ) then
+!         call err_handle(err, 1, &
+!              comment = "Hessian matrix apparently singular" )
+!         goto 20
+!      end if
+!      if( premult_lower_by_transpose( wkprprA, neg_hess_inv, &
+!           err) == RETURN_FAIL ) goto 800
+!20    continue
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+100   call err_handle(err, 1, &
+            comment = "Unable to allocate array" )
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+      if( allocated(wkrA) ) deallocate(wkrA)
+      if( allocated(wkrB) ) deallocate(wkrB)
+      if( allocated(wkprprA) ) deallocate(wkprprA)
+      if( allocated(pi_mat) ) deallocate(pi_mat)
+      if( allocated(pi_star) ) deallocate(pi_star)
+    end function run_lcprev_loglik_derivs
+    !##################################################################
+    integer(kind=our_int) function check_lcprev_loglik_derivs_args( &
+         n, p, r, x, lik_mat, freq, baseline, &
+         beta_vec, score, hess, &
+         err ) result(answer)
+      implicit none
+      ! inputs
+      integer(kind=our_int), intent(in) :: n   ! number of observations
+      integer(kind=our_int), intent(in) :: p   ! columns of x
+      integer(kind=our_int), intent(in) :: r   ! response categories
+      real(kind=our_dble), intent(in) :: x(:,:)
+      real(kind=our_dble), intent(in) :: lik_mat(:,:)
+      real(kind=our_dble), intent(in) :: freq(:)
+      integer(kind=our_int), intent(in) :: baseline   ! baseline category
+      real(kind=our_dble), intent(in) :: beta_vec(:)
+      ! outputs
+      real(kind=our_dble), intent(out) :: score(:)
+      real(kind=our_dble), intent(out) :: hess(:,:)
+      ! declare workspaces
+      type(error_type), intent(inout) :: err
+      ! declare locals
+      character(len=*), parameter :: &
+           subname = "check_lcprev_loglik_derivs_args"
+      ! begin
+      answer = RETURN_FAIL
+      !####
+      if( ( size(x,1) /= n ) .or. ( size(x,2) /= p ) ) goto 20
+      if( ( size(lik_mat,1) /= n ) .or. ( size(lik_mat,2) /= r ) ) goto 30
+      if( size(freq) /= n ) goto 35
+      if( ( baseline < 1 ) .or. ( baseline > r ) ) goto 40
+      if( size(score) /= p*(r-1) ) goto 70
+      if( size(hess,1) /= p*(r-1) ) goto 80
+      if( size(hess,2) /= p*(r-1) ) goto 80
+      if( size(beta_vec) /= p*(r-1) ) goto 100
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+20    call err_handle(err, 1, &
+            comment = "Argument x has incorrect size" )
+      goto 800
+30    call err_handle(err, 1, &
+            comment = "Argument lik_mat has incorrect size" )
+      goto 800
+35    call err_handle(err, 1, &
+            comment = "Argument freq has incorrect size" )
+      goto 800
+40    call err_handle(err, 1, &
+            comment = "Argument baseline is out of bounds" )
+      goto 800
+70    call err_handle(err, 1, &
+            comment = "Argument score has incorrect size" )
+      goto 800
+80    call err_handle(err, 1, &
+            comment = "Argument hess has incorrect size" )
+      goto 800
+100   call err_handle(err, 1, &
+            comment = "Argument beta_vec has incorrect size" )
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+    end function check_lcprev_loglik_derivs_args
+    !##################################################################
+    integer(kind=our_int) function compute_score_hess_lcprev( &
+         x, lik_mat, baseline, freq, beta_vec, loglik, &
+         score, neg_hess, pi_mat, pi_star, &
+         err, wkrA, wkrB ) &
+         result(answer)
+      implicit none
+      ! inputs
+      real(kind=our_dble), intent(in) :: x(:,:)
+      real(kind=our_dble), intent(in) :: lik_mat(:,:)
+      integer(kind=our_int), intent(in) :: baseline
+      real(kind=our_dble), intent(in) :: freq(:)
+      real(kind=our_dble), intent(in) :: beta_vec(:)
+      ! outputs
+      real(kind=our_dble), intent(out) :: loglik
+      real(kind=our_dble), intent(out) :: score(:)
+      real(kind=our_dble), intent(out) :: neg_hess(:,:)
+      real(kind=our_dble), intent(out) :: pi_mat(:,:)
+      real(kind=our_dble), intent(out) :: pi_star(:,:)
+      ! declare workspaces
+      type(error_type), intent(inout) :: err
+      real(kind=our_dble), intent(inout) :: wkrA(:)
+      real(kind=our_dble), intent(inout) :: wkrB(:)
+      ! declare locals
+      integer(kind=our_int) :: n, p, r, i, j, k, l, m, posnA, posnB, c
+      real(kind=our_dble) :: sum, q1, q2, q3, ifunA, ifunB
+      character(len=*), parameter :: &
+           subname = "compute_score_hess_lcprev"
+      ! begin
+      answer = RETURN_FAIL
+      !####
+      n = size(x,1)
+      p = size(x,2)
+      r = size(lik_mat,2)
+      loglik = 0.D0
+      score(:) = 0.D0
+      neg_hess(:,:) = 0.D0
+      if( compute_pi_mat( x, baseline, beta_vec, pi_mat, err, wkrA, wkrB ) &
+           == RETURN_FAIL ) goto 800
+      do i = 1, n
+         sum = 0.D0
+         do j = 1, r
+            if( pi_mat(i,j) < 0.D0 ) goto 100
+            if( lik_mat(i,j) < 0.D0 ) goto 150
+            wkrA(j) = pi_mat(i,j) * lik_mat(i,j)
+            sum = sum + wkrA(j)
+         end do
+         if( sum == 0.D0 ) goto 200
+         if( sum <= 0.D0 ) goto 250
+         do j = 1, r
+            pi_star(i,j) = wkrA(j) / sum
+         end do
+         loglik = loglik + freq(i) * log(sum)
+         posnA = 0
+         do j = 1, r
+            if( j == baseline ) cycle
+            do k = 1, p
+               posnA = posnA + 1
+               score(posnA) = score(posnA) + freq(i) * &
+                    ( pi_star(i,j) - pi_mat(i,j) ) * x(i,k)
+            end do
+         end do
+         posnA = 0
+         do j = 1, r
+            if( j == baseline ) cycle
+            do k = 1, p
+               posnA = posnA + 1
+               posnB = 0
+               do l = 1, r
+                  if( l == baseline ) cycle
+                  do m = 1, p
+                     posnB = posnB + 1
+                     if( posnB <= posnA ) then
+                        ifunA = 0.D0
+                        if( l == j ) ifunA = 1.D0
+                        q1 = pi_mat(i,j) * ( ifunA - pi_mat(i,l) )
+                        q2 = 0.D0
+                        do c = 1, r
+                           ifunA = 0.D0
+                           if( j == c ) ifunA = 1.D0
+                           ifunB = 0.D0
+                           if( l == c ) ifunB = 1.D0
+                           q2 = q2 + pi_star(i,c) * &
+                                ( ifunA - pi_mat(i,j) ) * &
+                                ( ifunB - pi_mat(i,l) )
+                        end do
+                        q3 = ( pi_star(i,j) - pi_mat(i,j) ) * &
+                             ( pi_star(i,l) - pi_mat(i,l) )
+                        neg_hess( posnA, posnB ) = neg_hess( posnA, posnB ) &
+                             + freq(i) * ( q1 - q2 + q3 ) * x(i,k) * x(i,m)
+                     end if
+                  end do
+               end do
+            end do
+         end do
+      end do
+      do posnA = 1, p*(r-1)
+         do posnB = 1, posnA
+            neg_hess(posnB, posnA) = neg_hess(posnA, posnB)
+         end do
+      end do
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+
+100   call err_handle(err, 1, &
+            comment = "Negative probability encountered" )
+      call err_handle(err, 3, iobs=i)
+      goto 800
+150   call err_handle(err, 1, &
+            comment = "Negative likelihood encountered" )
+      call err_handle(err, 3, iobs=i)
+      goto 800
+200   call err_handle(err, 1, &
+            comment = "Attempted division by zero" )
+      call err_handle(err, 3, iobs=i)
+      goto 800
+250   call err_handle(err, 1, &
+            comment = "Attempted logarithn of non-positive number" )
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+    end function compute_score_hess_lcprev
     !##################################################################
  end module cvam_engine
 !#####################################################################

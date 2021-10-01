@@ -1,22 +1,28 @@
 "Approximate Bayes cannot be run on a saturated model                    ",&
 "Approximate Bayes procedure aborted                                     ",&
 "Argument a or x is non-positive                                         ",&
+"Argument baseline is out of bounds                                      ",&
 "Argument beta has incorect length                                       ",&
 "Argument beta has incorrect size                                        ",&
 "Argument beta_cov_mat has incorrect size                                ",&
 "Argument beta_hat has incorrect size                                    ",&
 "Argument beta_mean has incorrect size                                   ",&
 "Argument beta_series has incorrect size                                 ",&
+"Argument beta_vec has incorrect size                                    ",&
+"Argument criterion is not positive                                      ",&
 "Argument df is non-positive                                             ",&
 "Argument estimate_info has incorrect size                               ",&
 "Argument estimate_var_info has incorrect size                           ",&
 "Argument freq has incorrect size                                        ",&
 "Argument freq_int has incorrect size                                    ",&
 "Argument freq_mean has incorrect size                                   ",&
+"Argument hess has incorrect size                                        ",&
 "Argument imputed_freq_int has incorrect size                            ",&
+"Argument iter_max is negative                                           ",&
 "Argument iwkp has incorect length                                       ",&
 "Argument lambda has incorrect size                                      ",&
 "Argument lambda is non-positive                                         ",&
+"Argument lik_mat has incorrect size                                     ",&
 "Argument lik_values has incorrect size                                  ",&
 "Argument lik_var_info has incorrect size                                ",&
 "Argument logP has insufficient size                                     ",&
@@ -30,6 +36,7 @@
 "Argument packed_SEs has incorrect size                                  ",&
 "Argument packed_estimates has incorrect size                            ",&
 "Argument packed_estimates_series has incorrect size                     ",&
+"Argument pi_mat has incorrect size                                      ",&
 "Argument piv has incorrect length                                       ",&
 "Argument pred_mat has incorrect size                                    ",&
 "Argument predict_var_info has incorrect size                            ",&
@@ -48,12 +55,14 @@
 "Argument str_zero_int has incorrect size                                ",&
 "Argument vhat_beta has incorrect size                                   ",&
 "Argument vhat_beta_rwm has incorrect size                               ",&
+"Argument vhat_beta_vec has incorrect size                               ",&
 "Argument wkn has incorect length                                        ",&
 "Argument wkn1 or wkn2 has incorect length                               ",&
 "Argument wknp has incorect dimensions                                   ",&
 "Argument wkp has incorect length                                        ",&
 "Argument wkp1 or wkp2 has incorect length                               ",&
 "Argument wkpp has incorect dimensions                                   ",&
+"Argument x has incorrect size                                           ",&
 "Argument x has more columns than rows                                   ",&
 "Argument y has incorrect size                                           ",&
 "Arguments x and q have different dimensions                             ",&
@@ -61,6 +70,7 @@
 "Array bounds exceeded                                                   ",&
 "Attempted division by zero                                              ",&
 "Attempted logarithm of non-positive number                              ",&
+"Attempted logarithn of non-positive number                              ",&
 "Bad row in data frame, positive freq for zero cells                     ",&
 "Bad row in input data                                                   ",&
 "Bad row in input data, positive freq for zero cells                     ",&
@@ -83,8 +93,10 @@
 "Estimated variances may be unreliable                                   ",&
 "Failed to tabulate data                                                 ",&
 "First element of v is not 1.D0                                          ",&
+"Hessian apparently singular                                             ",&
 "Hessian matrix not neg-def                                              ",&
 "Hessian not neg-def                                                     ",&
+"Hessian not neg-definite                                                ",&
 "Incorrect model type                                                    ",&
 "Incorrect number of cells for estimate                                  ",&
 "Input argument vec has length zero                                      ",&
@@ -100,6 +112,7 @@
 "Metropolis-Hastings got stuck                                           ",&
 "Model matrix not full rank                                              ",&
 "Negative frequency for row of pred_data                                 ",&
+"Negative likelihood encountered                                         ",&
 "Negative probability encountered                                        ",&
 "Negative value for burn_mcmc                                            ",&
 "Negative value for f_remaining                                          ",&
@@ -112,6 +125,7 @@
 "Negative value for ridge factor                                         ",&
 "Negative value for start_val_jitter                                     ",&
 "Negative value for thin_mcmc                                            ",&
+"Negative value in response matrix y                                     ",&
 "Negative value provided for start_val_jitter                            ",&
 "Newton-Raphson aborted                                                  ",&
 "Newton-Raphson failed to converge by                                    ",&
@@ -131,6 +145,7 @@
 "Observation found in structural zero cell                               ",&
 "Output argument does not match table type                               ",&
 "Overflow; cell mean became too large                                    ",&
+"Overflow; fitted value became too large                                 ",&
 "Overflow; jittered cell prob became too large                           ",&
 "Overflow; offset too large                                              ",&
 "Pivot out of bounds                                                     ",&
@@ -150,6 +165,7 @@
 "Table object is null                                                    ",&
 "The model is not saturated                                              ",&
 "There is no log-linear model                                            ",&
+"Unable to allocate array                                                ",&
 "Unable to allocate memory for object                                    ",&
 "Unable to allocate workspace array component                            ",&
 "Unable to deallocate memory for object                                  ",&
