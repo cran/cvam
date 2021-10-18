@@ -10,3 +10,8 @@ CHANGES IN version 0.9.1
 
    * fixed bug in cvamPredict when one variable is being predicted
 
+CHANGES IN version 0.9.2
+
+   * implemented complex survey features
+
+
