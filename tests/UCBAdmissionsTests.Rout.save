@@ -131,7 +131,7 @@ Model 3: ~ Dept * Gender * Admit
 2        5    -41006  1  1.5312
 3        0    -41026  5 20.2043
 > print( get.coef(M0, withSE=TRUE) )
-                      coef         SE  tstat   pval
+                      coef         SE  zstat   pval
 (Intercept)    4.805669565 0.02598938 184.91 0.0000
 Dept1          0.156547492 0.04985439   3.14 0.0017
 Dept2         -0.761804591 0.08789640  -8.67 0.0000
@@ -162,7 +162,7 @@ Dept5:Admit1  -0.218968500 0.04353759  -5.03 0.0000
 > # refit M0 with microdata to see that results are the same
 > M0 <- cvam( ~ Dept*Gender + Dept*Admit, data=microUCBAdmissions )
 > print( get.coef(M0, withSE=TRUE) )
-                      coef         SE  tstat   pval
+                      coef         SE  zstat   pval
 (Intercept)    4.805669565 0.02598938 184.91 0.0000
 Dept1          0.156547492 0.04985439   3.14 0.0017
 Dept2         -0.761804591 0.08789640  -8.67 0.0000

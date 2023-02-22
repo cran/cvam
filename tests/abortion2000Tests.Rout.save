@@ -341,7 +341,7 @@ Gradient length = 0.000001
 Final loglik = 18071.1
 
 Estimates from EM, with Hessian-based SEs
-               coef      SE  tstat   pval
+               coef      SE  zstat   pval
 (Intercept)  5.8748 0.04323 135.89 0.0000
 RH1          1.7816 0.05046  35.31 0.0000
 RH2          0.1201 0.06776   1.77 0.0762
@@ -417,7 +417,7 @@ Gradient length = 0.000001
 Final loglik = 18071.1
 
 Estimates from EM, with Hessian-based SEs
-               coef      SE  tstat   pval
+               coef      SE  zstat   pval
 (Intercept)  5.8748 0.04323 135.89 0.0000
 RH1          1.7816 0.05046  35.31 0.0000
 RH2          0.1201 0.06776   1.77 0.0762
@@ -538,7 +538,7 @@ Model 2: ~ Sex * RH * PolViews * AbAny
 [55] 0.00057 0.00096 0.00881 0.00744 0.00155 0.00089 0.00013 0.00012 0.00147
 [64] 0.00004 0.00507 0.00213 0.00009 0.00085 0.00004 0.00159 0.00004 0.00003
 > print( head( get.coef(fitEM.ridge, withSE=TRUE) ) )
-                  coef        SE tstat   pval
+                  coef        SE zstat   pval
 (Intercept)  2.2664510 0.1590153 14.25 0.0000
 Sex1         0.1349898 0.1590153  0.85 0.3959
 RH1          2.0025760 0.1675005 11.96 0.0000
@@ -603,7 +603,7 @@ Thinning interval for saved series =    1
       Number of imputations stored =    0
 
 Direct estimates and SE's from 5000 successive MCMC samples
-                                coef     SE tstat   pval
+                                coef     SE zstat   pval
 (Intercept)                 1.921414 0.1666 11.53 0.0000
 Sex1                        0.130798 0.1268  1.03 0.3022
 RH1                         2.334836 0.1764 13.24 0.0000

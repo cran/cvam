@@ -81,11 +81,7 @@ miInference <- function( est.list, std.err.list,
    return( result )}
 #######################################################################
 print.miInference <- function( x, ... ){
-   ############################################
-   # check argument
-   if( class(x) != "miInference" )
-      stop("Argument should be of class \"miInference\".")
-   ###############################################
+   stopifnot( inherits(x, "miInference") )
    if( x$method == "scalar" ){
       coef.table <- cbind(
          Est = signif( x$est, 5 ),

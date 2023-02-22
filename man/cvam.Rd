@@ -59,7 +59,7 @@ cvam(obj, ...)
   \item{subPop}{an optional logical variable indicating membership in
   a subpopulation for computing PML estimates from survey data.}
 
-  \item{stratum}{an optional variable indicating the sampling
+  \item{stratum}{an optional factor variable indicating the sampling
   stratum to which a unit belongs, used when computing linearized
   variance estimates for parameter estimates under a with-replacement
   (WR) survey design; see DETAILS.}
@@ -127,7 +127,7 @@ cvam(obj, ...)
   \item{startVal}{an optional vector of starting values for the model
   parameters. If \code{saturated=FALSE}, this should be a vector of
   length \code{NCOL(modelMatrix)} containing log-linear coefficients;
-  if \code{saturate=FALSE}, it should be a vector of length
+  if \code{saturated=FALSE}, it should be a vector of length
   \code{NROW(modelMatrix)} containing cell probabilities or cell
   means, which are automatically rescaled to become probabilities.}
 

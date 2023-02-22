@@ -34,8 +34,8 @@ cvamImpute(obj, data, freq, meanSeries = FALSE, synthetic=FALSE)
      after the burn-in period. If \code{FALSE}, then the imputations
      are based only on the cell probabilities from the final
      iteration, and (assuming the run was sufficiently long, if MCMC)
-     can be regarded as a single draw from their posterior distribution. 
-     See DETAILS below.}
+     can be regarded as a single draw from their posterior distribution;
+     see NOTE.}
 
   \item{synthetic}{if \code{TRUE}, then observed values for all
   variables in the data frame (excluding variables that are conditioned on
@@ -54,7 +54,7 @@ uncertainty about model parameters.
 \value{a data frame containing imputed data. If \code{freq} was given,
 the data frame has one row for each cell in the complete-data table
 and a variable \code{freq} containing the frequencies. If \code{freq}
-was not given, the data frame has one row for each microdata observatiom.
+was not given, the data frame has one row for each microdata observation.
 }
 
 \references{

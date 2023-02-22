@@ -568,8 +568,8 @@ subroutine cvam_lik( &
    ijunk = put_randgen_state_R(err)
  end subroutine cvam_lik
 !#####################################################################
-subroutine cvam_mlogit( n, p, r, x, y, baseline, iter_max, criterion, &
-     iter, converged_int, loglik, &
+subroutine cvam_mlogit( n, p, r, x, y, baseline, iter_max, crit_nr, &
+     crit_boundary, iter, converged_int, boundary_int, loglik, &
      score, hess, beta, beta_vec, vhat_beta_vec, pi_mat, &
      status, msg_len_max, msg_codes, msg_len_actual )
    !#############################################################
@@ -592,10 +592,12 @@ subroutine cvam_mlogit( n, p, r, x, y, baseline, iter_max, criterion, &
    real(kind=our_dble), intent(in) :: y(n,r)
    integer(kind=our_int), intent(in) :: baseline
    integer(kind=our_int), intent(in) :: iter_max
-   real(kind=our_dble), intent(in) :: criterion
+   real(kind=our_dble), intent(in) :: crit_nr
+   real(kind=our_dble), intent(in) :: crit_boundary
    ! outputs
    integer(kind=our_int), intent(out) :: iter 
    integer(kind=our_int), intent(out) :: converged_int
+   integer(kind=our_int), intent(out) :: boundary_int
    real(kind=our_dble), intent(out) :: loglik
    real(kind=our_dble), intent(out) :: score( p*(r-1) )
    real(kind=our_dble), intent(out) :: hess( p*(r-1), p*(r-1) )
@@ -613,8 +615,9 @@ subroutine cvam_mlogit( n, p, r, x, y, baseline, iter_max, criterion, &
    ! begin
    status = 1
    call err_reset(err)
-   if( run_mlogit( n, p, r, x, y, baseline, iter_max, criterion, &
-        iter, converged_int, loglik, score, hess, &
+   if( run_mlogit( n, p, r, x, y, baseline, iter_max, crit_nr, &
+        crit_boundary, iter, converged_int, boundary_int, &
+        loglik, score, hess, &
         beta, beta_vec, vhat_beta_vec, pi_mat, &
         err ) == RETURN_FAIL ) goto 800
    ! normal exit
@@ -734,15 +737,20 @@ subroutine cvam_lcprev_loglik_derivs( n, p, r, x, lik_mat, &
    call err_reset(err)
  end subroutine cvam_lcprev_loglik_derivs
 !#####################################################################
-subroutine cvam_logit( method_int, &
+subroutine cvam_logit( model_type_int, method_int, &
      dim_vec, x, ystar, freq_int, &
      n_levels_matrix, packed_map, baseline, &
-     row_posn_data_patt, freq_int_data_patt, row_posn_cov_patt, &
-     cov_patt_for_data_patt, &
+     row_posn_data_patt, freq_int_data_patt, subpop_int_data_patt, &
+     row_posn_cov_patt, &
+     cov_patt_for_data_patt, reverse_patt, &
      prior_int, ctrl_real, ctrl_int, &
-     beta, &
+     dim_vec_survey, n_clus, design_int, weight, &
+     scaled_weight_data_patt, &
+     pimat, beta, &
      proportions_DAP, &
-     iter, converged, max_diff, loglik, logP, vhat_beta, &
+     iter, converged, max_diff, loglik, logP, &
+     score, vhat_beta, pimat_big, &
+     count_outputs, total_freq_use_prior, status_flags_int, &
      status, msg_len_max, msg_codes, msg_len_actual )
    !#############################################################
    ! This is a wrapper function for run_cvam_logit
@@ -757,6 +765,7 @@ subroutine cvam_logit( method_int, &
    use cvam_engine
    implicit none
    ! declare input arguments
+   integer(kind=our_int), intent(in) :: model_type_int
    integer(kind=our_int), intent(in) :: method_int
    integer(kind=our_int), intent(in) :: dim_vec(7)
    real(kind=our_dble), intent(in) :: x(dim_vec(1), dim_vec(4))
@@ -767,12 +776,24 @@ subroutine cvam_logit( method_int, &
    integer(kind=our_int), intent(in) :: baseline
    integer(kind=our_int), intent(in) :: row_posn_data_patt( dim_vec(5) )
    integer(kind=our_int), intent(in) :: freq_int_data_patt( dim_vec(5) )
+   integer(kind=our_int), intent(in) :: subpop_int_data_patt( dim_vec(5) )
    integer(kind=our_int), intent(in) :: row_posn_cov_patt( dim_vec(6) )
    integer(kind=our_int), intent(in) :: cov_patt_for_data_patt( dim_vec(5) )
+   integer(kind=our_int), intent(in) :: reverse_patt(dim_vec(1), 2)
    integer(kind=our_int), intent(in) :: prior_int
-   real(kind=our_dble), intent(in) :: ctrl_real(5)
+   real(kind=our_dble), intent(in) :: ctrl_real(6)
    integer(kind=our_int), intent(in) :: ctrl_int(4)
+   integer(kind=our_int), intent(in) :: dim_vec_survey(2)
+   integer(kind=our_int), intent(in) :: n_clus( dim_vec_survey(2) )
+   integer(kind=our_int), intent(in) :: &
+        design_int( dim_vec_survey(1) * dim_vec(1), 3 )
+   real(kind=our_dble), intent(in) :: &
+        weight( dim_vec_survey(1) * dim_vec(1) )
+   real(kind=our_dble), intent(in) :: &
+        scaled_weight_data_patt( dim_vec_survey(1) * dim_vec(5) )
    ! inouts
+   real(kind=our_dble), intent(inout) :: pimat( dim_vec(6), &
+        n_levels_matrix(1,1) )
    real(kind=our_dble), intent(inout) :: beta( dim_vec(4), &
         n_levels_matrix(1,1) )
    ! outputs
@@ -782,17 +803,23 @@ subroutine cvam_logit( method_int, &
    real(kind=our_dble), intent(out) :: max_diff
    real(kind=our_dble), intent(out) :: loglik( dim_vec(7) )
    real(kind=our_dble), intent(out) :: logP( dim_vec(7) )
+   real(kind=our_dble), intent(out) :: score( &
+        dim_vec(4) * ( n_levels_matrix(1,1) - 1 ) )
    real(kind=our_dble), intent(out) :: vhat_beta( &
         dim_vec(4) * ( n_levels_matrix(1,1) - 1 ), &
         dim_vec(4) * ( n_levels_matrix(1,1) - 1 ) )
-   !
+   real(kind=our_dble), intent(out) :: &
+        pimat_big( dim_vec(1), n_levels_matrix(1,1) )
+   integer(kind=our_int), intent(out) :: count_outputs(8)
+   real(kind=our_dble), intent(out) :: total_freq_use_prior
+   integer(kind=our_int), intent(out) :: status_flags_int(3)
    ! messaging outputs
    integer(kind=our_int), intent(out) :: status
    integer(kind=our_int), intent(in) :: msg_len_max
    integer(kind=our_int), intent(out) :: msg_codes( msg_len_max, 17 )
    integer(kind=our_int), intent(out) :: msg_len_actual
    ! declare locals
-   integer(kind=our_int) :: ijunk, nclass
+   integer(kind=our_int) :: ijunk
    logical :: converged_logical
    type(workspace_type_cvam_basic) :: work
    type(error_type) :: err
@@ -800,27 +827,44 @@ subroutine cvam_logit( method_int, &
    status = 1
    call err_reset(err)
    if( get_randgen_state_R(err) == RETURN_FAIL ) goto 800
-   nclass = dim_vec(5)
    if( run_cvam_logit( &
-        method_int, &
+        model_type_int, method_int, &
         x, ystar, freq_int, &
         n_levels_matrix, packed_map, baseline, &
-        row_posn_data_patt, freq_int_data_patt, row_posn_cov_patt, &
-        cov_patt_for_data_patt, &
+        row_posn_data_patt, freq_int_data_patt, subpop_int_data_patt, &
+        row_posn_cov_patt, &
+        cov_patt_for_data_patt, reverse_patt, &
         prior_int, &
         ctrl_real(1), &   ! crit_em_null
         ctrl_real(2), &   ! flatten_em_null
         ctrl_real(3), &   ! prior_freq_tot_DAP
         ctrl_real(4), &   ! crit_em
         ctrl_real(5), &   ! crit_nr
+        ctrl_real(6), &   ! crit_boundary
         ctrl_int(1), &    ! iter_max_em_null
         ctrl_int(2), &    ! iter_max_em
         ctrl_int(3), &    ! start_val_use_int
         ctrl_int(4), &    ! iter_max_nr
-        beta, &
+        dim_vec_survey(1), &  ! survey_mode_int
+        dim_vec_survey(2), &  ! n_strat
+        n_clus, design_int, weight, scaled_weight_data_patt, &
+        pimat, beta, &
         work, err, &
         proportions_DAP, &
-        iter, converged_logical, max_diff, loglik, logP, vhat_beta &
+        iter, converged_logical, max_diff, loglik, logP, &
+        score, vhat_beta, pimat_big, &
+        count_outputs(1), &  ! total N supplied
+        count_outputs(2), &  ! total N in subpop, survey mode
+        count_outputs(3), &  ! total N used in model fit
+        total_freq_use_prior, &
+        count_outputs(4), &  ! n_cov_patt_empty
+        count_outputs(5), &  ! n_cov_patt_all_missing
+        count_outputs(6), &  ! n_cov_patt_all_zero
+        count_outputs(7), &  ! n_param_estimated
+        count_outputs(8),  &  ! degrees_of_freedom
+        status_flags_int(1), &   ! aborted_int
+        status_flags_int(2), &   ! var_est_failed_int
+        status_flags_int(3)  &   ! boundary_int
         ) == RETURN_FAIL ) goto 800
    !
    if( converged_logical ) then
@@ -842,6 +886,102 @@ subroutine cvam_logit( method_int, &
    ijunk = put_randgen_state_R(err)
  end subroutine cvam_logit
 !#####################################################################
+subroutine cvam_logit_predict( model_type_int, type_int, &
+     dim_vec, x, ystar, freq_int, &
+     n_levels_matrix, packed_map, baseline, &
+     row_posn_data_patt, freq_int_data_patt, &
+     row_posn_cov_patt, &
+     cov_patt_for_data_patt, reverse_patt, &
+     special_codes, se_fit_int, &
+     pimat, beta, vhat_beta, &
+     se_mat, vhat_pimat_array, &
+     status, msg_len_max, msg_codes, msg_len_actual )
+   !#############################################################
+   ! This is a wrapper function for run_cvam_logit_predict
+   ! status = 0 means everything ran OK, or run was aborted for
+   !    some reason (see msg)
+   ! Other value of status indicates a fatal error.
+   !#############################################################
+   use error_handler
+   use program_constants
+   use dynalloc
+   use math_R
+   use cvam_engine
+   implicit none
+   ! declare input arguments
+   integer(kind=our_int), intent(in) :: model_type_int
+   integer(kind=our_int), intent(in) :: type_int
+   integer(kind=our_int), intent(in) :: dim_vec(7)
+   real(kind=our_dble), intent(in) :: x(dim_vec(1), dim_vec(4))
+   integer(kind=our_int), intent(in) :: ystar(dim_vec(1), dim_vec(2))
+   integer(kind=our_int), intent(in) :: freq_int(dim_vec(1))
+   integer(kind=our_int), intent(in) :: n_levels_matrix(dim_vec(2), 3)
+   integer(kind=our_int), intent(in) :: packed_map(dim_vec(3))
+   integer(kind=our_int), intent(in) :: baseline
+   integer(kind=our_int), intent(in) :: row_posn_data_patt( dim_vec(5) )
+   integer(kind=our_int), intent(in) :: freq_int_data_patt( dim_vec(5) )
+   integer(kind=our_int), intent(in) :: row_posn_cov_patt( dim_vec(6) )
+   integer(kind=our_int), intent(in) :: cov_patt_for_data_patt( dim_vec(5) )
+   integer(kind=our_int), intent(in) :: reverse_patt(dim_vec(1), 2)
+   real(kind=our_dble), intent(in) :: special_codes(4)
+   integer(kind=our_int), intent(in) :: se_fit_int
+   real(kind=our_dble), intent(inout) :: pimat( dim_vec(6), &
+        n_levels_matrix(1,1) )
+   real(kind=our_dble), intent(in) :: beta( dim_vec(4), &
+        n_levels_matrix(1,1) )
+   real(kind=our_dble), intent(in) :: vhat_beta( &
+        dim_vec(4) * ( n_levels_matrix(1,1) - 1 ), &
+        dim_vec(4) * ( n_levels_matrix(1,1) - 1 ) )
+   ! outputs
+   real(kind=our_dble), intent(out) :: &
+        se_mat( dim_vec(6), n_levels_matrix(1,1) )
+   real(kind=our_dble), intent(out) :: &
+        vhat_pimat_array( dim_vec(6), n_levels_matrix(1,1), &
+        n_levels_matrix(1,1) )
+   ! messaging outputs
+   integer(kind=our_int), intent(out) :: status
+   integer(kind=our_int), intent(in) :: msg_len_max
+   integer(kind=our_int), intent(out) :: msg_codes( msg_len_max, 17 )
+   integer(kind=our_int), intent(out) :: msg_len_actual
+   ! declare locals
+   real(kind=our_dble) :: mvcode, nancode, infcode, neginfcode
+   integer(kind=our_int) :: ijunk
+   type(workspace_type_cvam_basic) :: work
+   type(error_type) :: err
+   ! begin
+   status = 1
+   call err_reset(err)
+   if( get_randgen_state_R(err) == RETURN_FAIL ) goto 800
+   mvcode = special_codes(1)
+   nancode = special_codes(2)
+   infcode = special_codes(3)
+   neginfcode = special_codes(4)
+   if( run_cvam_logit_predict( &
+        model_type_int, type_int, &
+        x, ystar, freq_int, &
+        n_levels_matrix, packed_map, baseline, &
+        row_posn_data_patt, freq_int_data_patt, &
+        row_posn_cov_patt, &
+        cov_patt_for_data_patt, reverse_patt, &
+        mvcode, nancode, infcode, neginfcode, se_fit_int, &
+        pimat, beta, vhat_beta, &
+        work, err, &
+        se_mat, vhat_pimat_array &
+        ) == RETURN_FAIL ) goto 800
+   ! normal exit
+   status = 0
+800 continue
+   ! report message if present
+   msg_codes(:,:) = 0
+   msg_len_actual = 0
+   if( err_msg_present(err) ) call err_get_codes(err, &
+        msg_codes, msg_len_actual)
+   ! cleanup
+   call err_reset(err)
+   ijunk = nullify_workspace_type_cvam_basic( work, err )
+   ijunk = put_randgen_state_R(err)
+ end subroutine cvam_logit_predict
+ !#####################################################################
 subroutine cvam_lcmeas( method_int, &
      dim_vec, x, ystar, freq_int, &
      n_levels_matrix, packed_map, baseline, &

@@ -48,7 +48,7 @@ cvamControl( iterMaxEM = 500L, iterMaxNR = 50L,
   after the burn-in period when \code{method="MCMC"}.}
 
   \item{burnMCMC}{number of iterations of Markov chain Monte Carlo
-  performed as a burn-in period, for which the reults are
+  performed as a burn-in period, for which the results are
   discarded. The total number of iterations performed is
   \code{burnMCMC+iterMCMC}.} 
 

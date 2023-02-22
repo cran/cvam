@@ -1,0 +1,163 @@
+
+R version 4.2.1 (2022-06-23 ucrt) -- "Funny-Looking Kid"
+Copyright (C) 2022 The R Foundation for Statistical Computing
+Platform: x86_64-w64-mingw32/x64 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> library(cvam)
+> 
+> fit <- cvam( ~ V1 + V2, data=crime, freq=n)
+> summary(fit)
+~ V1 + V2
+
+Prior:
+      Flattening frequency = 0
+Total nuggets + flattening = 0
+              Ridge factor = 0
+          Intensity factor = 1
+
+Sample size:
+              total N in supplied data = 756
+N from supplied data used in model fit = 641
+           prior effective sample size =   0
+
+Degrees of freedom:
+    patterns of coarsened data = 9
+  cells in complete-data table = 4
+cells without latent variables = 4
+         structural zero cells = 0
+   parameters in Poisson model = 3
+                            df = 1
+
+Starting values:
+default, center
+jitter SD = 0.000000
+
+EM algorithm:
+Converged at iteration 9
+Gradient length = 0.000000
+
+  Final logP = 2926.608
+Final loglik = 2926.608
+
+Estimates from EM, with Hessian-based SEs
+              coef      SE zstat pval
+(Intercept) 4.5677 0.06154 74.23    0
+V11         0.6808 0.05053 13.47    0
+V21         0.8037 0.05478 14.67    0
+
+> 
+> # make V1="yes", V2="yes" a structural zero
+> mfTrue <- get.mfTrue(fit)
+> strZero <- ( mfTrue$V1 == "yes" ) & ( mfTrue$V2 == "yes" )
+> 
+> # next line would throw an error because observations are found in yes, yes
+> # fit <- cvam( ~ V1 + V2, data=crime, freq=n, strZero=strZero )
+> 
+> # get rid of bad row and fit with structural zero
+> crime2 <- crime[-5,]
+> fit <- cvam( ~ V1 + V2, data=crime2, freq=n, strZero=strZero)
+> cvamEstimate( ~ V1 + V2, fit)
+Estimates and SE's from EM, linearized
+~ V1 + V2
+   V1  V2   prob     SE prob.lower prob.upper
+1  no  no 0.7405 0.0185     0.7026     0.7751
+2 yes  no 0.1496 0.0150     0.1226     0.1813
+3  no yes 0.1099 0.0132     0.0866     0.1385
+4 yes yes 0.0000     NA         NA         NA
+>    
+> # verify that you get the same fit from saturated model
+> fit <- cvam( ~ V1 * V2, data=crime2, freq=n, strZero=strZero, saturated=TRUE)
+> cvamEstimate( ~ V1 + V2, fit)
+Estimates from EM
+~ V1 + V2
+   V1  V2   prob
+1  no  no 0.7405
+2 yes  no 0.1496
+3  no yes 0.1099
+4 yes yes 0.0000
+> 
+> # next line would throw an error, because modelMatrix not full rank
+> # fit <- cvam( ~ V1 * V2, data=crime2, freq=n, strZero=strZero)
+> 
+> # example with stroke patients from Bishop, Fienberg and Holland (1975)
+> # show an equivalent of their Table 5.2-6
+> xtabs( N ~ Initial + Final, data=strokePatients )
+       Final
+Initial  A  B  C  D  E
+      A  5  0  0  0  0
+      B  4  5  0  0  0
+      C  6  4  4  0  0
+      D  9 10  4  1  0
+      E 11 23 12 15  8
+> 
+> # define structural zeros
+> mfTrue <- cvam( ~ Initial + Final, freq=N, data=strokePatients,
++    method="mfTrue" ) 
+> strZero <-
++    ( ( mfTrue$Initial == "A" ) & ( mfTrue$Final %in% c("B","C","D","E") ) ) |
++    ( ( mfTrue$Initial == "B" ) & ( mfTrue$Final %in% c("C","D","E") ) ) |
++    ( ( mfTrue$Initial == "C" ) & ( mfTrue$Final %in% c("D","E") ) ) |
++    ( ( mfTrue$Initial == "D" ) & ( mfTrue$Final == "E" ) )
+> 
+> # fit model of quasi-independence; fitted values should agree with those
+> # in Bishop, Fienberg and Holland (1975), Table 5.2-7
+> fit <- cvam( ~ Initial + Final, data=strokePatients, freq=N, strZero=strZero )
+> get.fitted(fit, type="mean")
+   Initial Final freq       fit
+1        A     A    5  5.000000
+2        B     A    4  3.750000
+3        C     A    6  4.427711
+4        D     A    9  6.161588
+5        E     A   11 15.660702
+6        A     B    0  0.000000
+7        B     B    5  5.250000
+8        C     B    4  6.198795
+9        D     B   10  8.626223
+10       E     B   23 21.924982
+11       A     C    0  0.000000
+12       B     C    0  0.000000
+13       C     C    4  3.373494
+14       D     C    4  4.694543
+15       E     C   12 11.931963
+16       A     D    0  0.000000
+17       B     D    0  0.000000
+18       C     D    0  0.000000
+19       D     D    1  4.517647
+20       E     D   15 11.482353
+21       A     E    0  0.000000
+22       B     E    0  0.000000
+23       C     E    0  0.000000
+24       D     E    0  0.000000
+25       E     E    8  8.000000
+> 
+> # compute X2, reported by Bishop, Fienberg and Holland (1975) as 8.37
+> observed <- get.fitted(fit, type="mean")$freq
+> fitted <- get.fitted(fit, type="mean")$fit
+> pearson <- ( observed - fitted ) / sqrt(fitted)
+> pearson <- pearson[!strZero]
+> X2 <- sum(pearson^2)
+> X2
+[1] 8.369062
+> 
+> # compute G2, reported by Bishop, Fienberg and Holland (1975) as 9.60
+> fitSat <- cvam( ~ Initial * Final, data=strokePatients, freq=N,
++   strZero=strZero, saturated=TRUE )
+> G2 <- 2 * ( get.loglik(fitSat) - get.loglik(fit) )
+> G2
+[1] 9.595791
+> 
+> proc.time()
+   user  system elapsed 
+   0.14    0.07    0.17 

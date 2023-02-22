@@ -12,6 +12,10 @@ CHANGES IN version 0.9.1
 
 CHANGES IN version 0.9.2
 
-   * implemented complex survey features
+   * added survey design variables to cig2019 and abortion2000
+   * fixed bug in cvam computation of standard errors when zero
+     frequencies are present
 
+CHANGES IN version 0.9.3
+   * fixed problem with structural zeros
 

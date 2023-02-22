@@ -42,13 +42,34 @@ cvam ChangeLog
 09-30-2021
 	* fixed DESCRIPTION and vignettes to address issues from CRAN
 
-10-01=2021
+10-01-2021
 	* fixed bug in cvamPredict
 	* changed DESCRIPTION to no longer suggest sticky
 
-10-13=2021
+10-13-2021
 	* replaced .Rout.save files with new versions
 	* converted .rda data files to "xz" compression
 
+10-18-2021
+	* fixed bug in cvam computation of standard errors when zero
+	frequencies are present
 
+10-19-2021
+	* fixed registration of native routines
 
+03-22-2022
+	* cvamLogit functions added
+
+05-31-2022
+	* added alligator data and alligatorSkinny
+	* renamed "cvamMlogit" functions to "cvamLogitWide"
+
+02-22-2023
+	* de-exported logit-related functions, to be re-exported later in a
+	future release
+	* temporarily removed alligator data and man pages, to be restored
+	later when logit functions are released
+	* fixed problem with structural zeros
+	* added dataset on stroke patients to test fitting of
+	quasi-independence model
+	* added examples with structural zeros to test suite

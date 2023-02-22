@@ -10,7 +10,7 @@
 "Argument beta_mean has incorrect size                                   ",&
 "Argument beta_series has incorrect size                                 ",&
 "Argument beta_vec has incorrect size                                    ",&
-"Argument criterion is not positive                                      ",&
+"Argument crit_nr is not positive                                        ",&
 "Argument design_int has incorrect shape                                 ",&
 "Argument df is non-positive                                             ",&
 "Argument estimate_info has incorrect size                               ",&
@@ -73,6 +73,7 @@
 "Arguments x and y have incompatible dimensions                          ",&
 "Array baseline has incorrect size                                       ",&
 "Array beta has incorrect dimensions                                     ",&
+"Array beta has incorrect size                                           ",&
 "Array bounds exceeded                                                   ",&
 "Array bounds exceeded for data_patt_st                                  ",&
 "Array cov_pattfor_data_patt has incorrect size                          ",&
@@ -85,13 +86,23 @@
 "Array n_data_patt has incorrect size                                    ",&
 "Array ncol_x has incorrect size                                         ",&
 "Array params has incorrect size                                         ",&
+"Array pimat contains missing values                                     ",&
+"Array pimat has incorrect size                                          ",&
+"Array pimat_big has incorrect size                                      ",&
 "Array proportions_DAP has incorrect size                                ",&
+"Array reverse_patt has incorrect size                                   ",&
 "Array row_posn_cov_patt has incorrect size                              ",&
 "Array row_posn_data_patt has incorrect size                             ",&
+"Array scaled_weight_data_patt has incorrect size                        ",&
+"Array score has incorrect size                                          ",&
+"Array se_mat has incorrect size                                         ",&
+"Array subpop_int_data_patt has incorrect size                           ",&
 "Array vhat_beta has incorrect size                                      ",&
+"Array vhat_pimat_array has incorrect size                               ",&
 "Attempted division by zero                                              ",&
 "Attempted logarithm of non-positive number                              ",&
 "Attempted logarithn of non-positive number                              ",&
+"Attempted square root of negative number                                ",&
 "Bad data in cov_patt_for_data_patt                                      ",&
 "Bad row in data frame, positive freq for zero cells                     ",&
 "Bad row in input data                                                   ",&
@@ -107,6 +118,7 @@
 "Bounds exceeded on array row_posn_data_patt                             ",&
 "Bounds exceeded on array xcol                                           ",&
 "Cluster indicator out of range                                          ",&
+"Cov pattern not found in supplied dataset                               ",&
 "Cycle is already done                                                   ",&
 "Data inconsistent with structural zeros                                 ",&
 "Degrees of freedom are not positive                                     ",&
@@ -121,12 +133,19 @@
 "Element of n_cov_patt not valid; must be at least 1                     ",&
 "Element of n_data_patt not valid; must be at least 1                    ",&
 "Element of ncol_x not valid; must be at least 1                         ",&
+"Element of pimat out of range                                           ",&
+"Element of reverse_cov_patt out of range                                ",&
+"Element of reverse_patt(:,1) out of range                               ",&
+"Element of reverse_patt(:,2) out of range                               ",&
 "Element of row_posn_cov_patt out of range                               ",&
 "Element of row_posn_data_patt out of range                              ",&
 "Element of str_zero_int is not 0 or 1                                   ",&
+"Element of subpop_int_data_patt is negative                             ",&
 "Element of xcol out of range; exceeds bounds of pred                    ",&
 "Element of ystar out of range                                           ",&
+"Elements of beta do not satisfy baseline constraint                     ",&
 "Elements of freq_int_data_patt do not add up                            ",&
+"Empty covariate patterns were omitted from model fit                    ",&
 "Error: stack size is too small                                          ",&
 "Estimate at or near boundary                                            ",&
 "Estimate has no variables                                               ",&
@@ -157,7 +176,10 @@
 "Matrix vhat_beta_rwm not positive definite                              ",&
 "Method not recognized                                                   ",&
 "Metropolis-Hastings got stuck                                           ",&
+"Model is non-saturated, this function cannot be used                    ",&
+"Model is saturated, this function cannot be used                        ",&
 "Model matrix not full rank                                              ",&
+"Model_type not recognized                                               ",&
 "NR algorithm aborted                                                    ",&
 "Negative cell mean encountered                                          ",&
 "Negative frequency for row of pred_data                                 ",&
@@ -178,7 +200,6 @@
 "Negative value for iter_max_nr                                          ",&
 "Negative value for iter_mcmc                                            ",&
 "Negative value for logit_prior_strength                                 ",&
-"Negative value for prior_freq_tot_DAP                                   ",&
 "Negative value for ridge factor                                         ",&
 "Negative value for start_val_jitter                                     ",&
 "Negative value for thin_mcmc                                            ",&
@@ -199,6 +220,7 @@
 "Non-positive value for mcmc proposal df                                 ",&
 "Non-positive value for mcmc proposal scale_fac                          ",&
 "Non-positive value for n_strat                                          ",&
+"Non-positive value for prior_freq_tot_DAP                               ",&
 "Non-square matrix encountered; square expected                          ",&
 "Non-zero prob provided for structural zero                              ",&
 "Non-zero starting value provided for structural zero                    ",&
@@ -211,6 +233,7 @@
 "Overflow; jittered cell mean became too large                           ",&
 "Overflow; jittered cell prob became too large                           ",&
 "Overflow; offset too large                                              ",&
+"Pattern zero encountered, but no mvcode supplied                        ",&
 "Pivot out of bounds                                                     ",&
 "Positive frequency seen for event of prob=0                             ",&
 "Posterior distribution is not proper;                                   ",&
@@ -224,9 +247,9 @@
 "Something bad happened                                                  ",&
 "Something really bad happened                                           ",&
 "Standard errors cannot be computed                                      ",&
+"Standard errors not available for saturated fit                         ",&
 "Start, finish positions for estimate incorrect                          ",&
 "Starting value has non-positive probability                             ",&
-"Starting value in beta does not satisfy constraint                      ",&
 "Step size h is non-positive                                             ",&
 "Step size h is too large, exceeds a                                     ",&
 "Stratum indicator out of range                                          ",&
@@ -247,6 +270,7 @@
 "Underflow; jittered cell prob became zero                               ",&
 "Underflow; offset too small                                             ",&
 "Upper limit b does not exceed lower limit a                             ",&
+"User-supplied starting values cannot be used                            ",&
 "Value for impute_approx_bayes_int not recognized                        ",&
 "Value for save_prob_series_int not recognized                           ",&
 "Value for stuck_limit not positive                                      ",&
@@ -257,14 +281,17 @@
 "Value of logit_prior_int not recognized                                 ",&
 "Value of method not recognized                                          ",&
 "Value of model_type not recognized                                      ",&
+"Value of model_type_int not recognized                                  ",&
 "Value of prior not recognized                                           ",&
 "Value of skip_SEs_int not recognized                                    ",&
 "Value of start_val_default not recognized                               ",&
 "Value of start_val_default_int not recognized                           ",&
 "Value of start_val_use_int not recognized                               ",&
 "Value of synthetic_int not recognized                                   ",&
+"Value of type_int not recognized                                        ",&
 "Value of type_mcmc not recognized                                       ",&
 "Value supplied for class prevalence is not positive                     ",&
+"Values in scaled_weight_data_patt appear incorrect                      ",&
 "When creating mapping: allocation error                                 ",&
 "When creating mapping: array bounds exceeded                            ",&
 "Workspace wkn has incorrect length                                      ",&
@@ -277,3 +304,5 @@
 "estimate_type not recognized                                            ",&
 "iter_mcmc is not a multiple of thin_mcmc                                ",&
 "logP is not concave                                                     ",&
+"subpop_int_data_patt exceeds freq_int_data_patt                         ",&
+"subpop_int_data_patt incompatible with scaled weight                    ",&

@@ -3,7 +3,7 @@
 \alias{summary.cvam}
 \alias{print.summary.cvam}
 
-\title{Summarize a \code{cvam} object}
+\title{Summarize a \code{cvam} Object}
 
 \description{Summarizes the result from a call to \code{cvam}}
 

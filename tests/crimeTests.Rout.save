@@ -62,7 +62,7 @@ Gradient length = 0.000000
 Final loglik = 2926.608
 
 Estimates from EM, with Hessian-based SEs
-              coef      SE tstat pval
+              coef      SE zstat pval
 (Intercept) 4.5677 0.06154 74.23    0
 V11         0.6808 0.05053 13.47    0
 V21         0.8037 0.05478 14.67    0
@@ -273,7 +273,7 @@ Thinning interval for saved series =    1
       Number of imputations stored =    0
 
 Direct estimates and SE's from 5000 successive MCMC samples
-              coef      SE tstat pval
+              coef      SE zstat pval
 (Intercept) 4.6104 0.05779 79.77    0
 V11         0.5015 0.06015  8.34    0
 V21         0.6657 0.06018 11.06    0

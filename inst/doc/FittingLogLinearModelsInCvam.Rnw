@@ -2682,8 +2682,6 @@ miInference( est.list, SE.list )
 \appendix
 \gdef\thesection{Appendix \Alph{section}}
 
-\thispagestyle{empty}
-
 \section{Notation for multivariate categorical
 data\label{app:notation}}
 
@@ -3607,7 +3605,7 @@ as fixed, otherwise \texttt{cvamEstimate} reports an error. Writing a
 possible value for $\bV_i$ as $\bv=(\ba,\bb,\bc)$, we may identify
 cells of true data frame by this triple index, as in
 \[
-\pi_{\ba,\bb,\bc}\,=\,P(\bA_i=\ba,\bB_i=\bb,\bC_i=\bc).
+\pi_{\basub,\bbsub,\bcsub}\,=\,P(\bA_i=\ba,\bB_i=\bb,\bC_i=\bc).
 \] 
 The probabilities requested by \texttt{cvamEstimate} are $P(\bB_i=\bb
 \,|\,\bA_i=\ba)$ for all $\ba\in\mathbb{A}$ and 

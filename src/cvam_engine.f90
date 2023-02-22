@@ -21,7 +21,7 @@ module cvam_engine
         run_cvam_impute_freq, run_cvam_impute_microdata, &
         run_cvam_lik, run_mlogit, run_mlogit_loglik_derivs, &
         run_lcprev_loglik_derivs, nullify_workspace_type_cvam_basic, &
-        run_cvam_logit, run_cvam_lcmeas
+        run_cvam_logit, run_cvam_logit_predict, run_cvam_lcmeas
    ! parameters private to this module
    real(kind=our_dble), parameter :: &
         log_huge = log( huge( real(0,kind=our_dble) ) ), &
@@ -369,6 +369,7 @@ module cvam_engine
       ! response
       ! This workspace stores the frequencies, but not the response
       ! variable or the matrix of predictors
+      character(len=model_type_str_len) :: model_type = ""
       character(len=method_str_len) :: method = ""
       character(len=method_str_len) :: prior = ""
       integer(kind=our_int) :: nrow = 0 ! number of data rows
@@ -394,14 +395,26 @@ module cvam_engine
       !    data patterns
       integer(kind=our_int), allocatable :: row_posn_data_patt(:)
       integer(kind=our_int), allocatable :: freq_int_data_patt(:)
+      integer(kind=our_int), allocatable :: subpop_int_data_patt(:) !survey mode
       real(kind=our_dble), allocatable :: freq_data_patt(:)
       real(kind=our_dble), allocatable :: pistar_data_patt(:)
-      integer(kind=our_int) :: n_cov_patt = 0 ! number of distinct
       !    covariate patterns
+      integer(kind=our_int) :: n_cov_patt = 0 ! number of distinct cov patterns
+      integer(kind=our_int) :: n_cov_patt_all_missing = 0
+      integer(kind=our_int) :: n_cov_patt_all_zero = 0
+      integer(kind=our_int) :: n_cov_patt_empty = 0
+      integer(kind=our_int) :: n_param_estimated = 0
+      integer(kind=our_int) :: degrees_of_freedom = 0
       integer(kind=our_int), allocatable :: row_posn_cov_patt(:)
       integer(kind=our_int), allocatable :: cov_patt_for_data_patt(:)
       integer(kind=our_int), allocatable :: data_patt_st(:)
       integer(kind=our_int), allocatable :: data_patt_fin(:)
+      logical, allocatable :: cov_patt_all_missing(:)
+      logical, allocatable :: cov_patt_all_zero(:)
+      logical, allocatable :: cov_patt_empty(:)
+      ! reverse lookup
+      integer(kind=our_int), allocatable :: reverse_cov_patt(:)
+      integer(kind=our_int), allocatable :: reverse_data_patt(:)
       ! table of marginal frequencies for coarsened response
       integer(kind=our_int), allocatable :: ystar_table(:)
       ! objects for running EM on marginal frequencies
@@ -423,12 +436,26 @@ module cvam_engine
       integer(kind=our_int) :: iter_nr = 0
       real(kind=our_dble) :: max_diff_nr = 0.D0
       logical :: start_val_use = .false.
+      real(kind=our_dble) :: crit_boundary = 0.D0
+      logical :: aborted = .false.
+      logical :: var_est_failed = .false.
+      logical :: boundary = .false.
+      ! data use objects
+      integer(kind=our_int) :: total_freq_supplied_int = 0
+      integer(kind=our_int) :: total_freq_subpop_int = 0
+      integer(kind=our_int) :: total_freq_use_data_int = 0
+      real(kind=our_dble) :: total_freq_use_prior = 0.D0
+      ! model fitting objects
       real(kind=our_dble), allocatable :: loglik_vec(:)
       real(kind=our_dble), allocatable :: logP_vec(:)
       real(kind=our_dble), allocatable :: beta_new(:)
       real(kind=our_dble), allocatable :: beta_nr(:)
       real(kind=our_dble), allocatable :: beta_nr_new(:)
       real(kind=our_dble), allocatable :: beta_tmp(:)
+      real(kind=our_dble), allocatable :: pimat_new(:,:)
+      real(kind=our_dble), allocatable :: pimat_nr(:,:)
+      real(kind=our_dble), allocatable :: pimat_nr_new(:,:)
+      real(kind=our_dble), allocatable :: pimat_tmp(:,:)
       real(kind=our_dble) :: loglik   ! observed-data loglikelihood
       real(kind=our_dble) :: loglik_A ! augmented-data loglikelihood
       real(kind=our_dble) :: logprior ! log-prior-density
@@ -455,6 +482,13 @@ module cvam_engine
       real(kind=our_dble), allocatable :: wkdB(:)
       real(kind=our_dble), allocatable :: wkddA(:,:)
       real(kind=our_dble), allocatable :: wkddB(:,:)
+      real(kind=our_dble), allocatable :: wkrdA(:,:)
+      ! objects for fitting saturated model
+      ! If model is non-saturated, these won't be allocated
+      integer(kind=our_int), allocatable :: iter_em_saturated(:)
+      logical, allocatable :: converged_em_saturated(:)
+      real(kind=our_dble), allocatable :: pi_saturated(:)
+      real(kind=our_dble), allocatable :: pi_saturated_new(:)
    end type workspace_type_cvam_logit
    !###################################################################
    type :: workspace_type_cvam_lcmeas
@@ -524,6 +558,19 @@ module cvam_engine
       integer(kind=our_int), allocatable :: mvcode(:)  ! length nitem
       type(workspace_type_cvam_logit) :: logit
       type(workspace_type_cvam_lcmeas) :: lcmeas
+      ! survey objects
+      logical :: survey_mode = .false.
+      integer(kind=our_int) :: n_strat = 0
+      integer(kind=our_int), allocatable :: n_clus(:)
+      integer(kind=our_int) :: n_clus_tot = 0
+      integer(kind=our_int), allocatable :: stratum(:)
+      integer(kind=our_int), allocatable :: cluster(:)
+      logical, allocatable :: subpop(:)
+      real(kind=our_dble), allocatable :: weight(:)
+      real(kind=our_dble), allocatable :: scaled_weight(:)
+      integer(kind=our_int) :: n_subpop = 0
+      real(kind=our_dble) :: total_weight_subpop = 0.D0
+      integer(kind=our_int), allocatable :: stratum_for_cluster(:)
    end type workspace_type_cvam_basic
    !###################################################################
    contains
@@ -1229,6 +1276,7 @@ module cvam_engine
       integer(kind=our_int) :: status
       ! begin
       answer = RETURN_FAIL
+      work%model_type = ""
       work%method = ""
       work%prior = ""
       work%nrow = 0
@@ -1269,6 +1317,10 @@ module cvam_engine
          deallocate( work%freq_int_data_patt, stat=status )
          if( status /= 0 ) goto 800
       end if
+      if( allocated( work%subpop_int_data_patt ) ) then
+         deallocate( work%subpop_int_data_patt, stat=status )
+         if( status /= 0 ) goto 800
+      end if
       if( allocated( work%freq_data_patt ) ) then
          deallocate( work%freq_data_patt, stat=status )
          if( status /= 0 ) goto 800
@@ -1278,6 +1330,11 @@ module cvam_engine
          if( status /= 0 ) goto 800
       end if
       work%n_cov_patt = 0
+      work%n_cov_patt_all_missing = 0
+      work%n_cov_patt_all_zero = 0
+      work%n_cov_patt_empty = 0
+      work%n_param_estimated = 0
+      work%degrees_of_freedom = 0
       if( allocated( work%row_posn_cov_patt ) ) then
          deallocate( work%row_posn_cov_patt, stat=status )
          if( status /= 0 ) goto 800
@@ -1294,6 +1351,28 @@ module cvam_engine
          deallocate( work%data_patt_fin, stat=status )
          if( status /= 0 ) goto 800
       end if
+      if( allocated( work%cov_patt_all_missing ) ) then
+         deallocate( work%cov_patt_all_missing, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%cov_patt_all_zero ) ) then
+         deallocate( work%cov_patt_all_zero, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%cov_patt_empty ) ) then
+         deallocate( work%cov_patt_empty, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%reverse_cov_patt ) ) then
+         deallocate( work%reverse_cov_patt, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+
+      if( allocated( work%reverse_data_patt ) ) then
+         deallocate( work%reverse_data_patt, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+
       if( allocated( work%ystar_table ) ) then
          deallocate( work%ystar_table, stat=status )
          if( status /= 0 ) goto 800
@@ -1318,6 +1397,17 @@ module cvam_engine
       work%iter_nr = 0
       work%max_diff_nr = 0.D0
       !
+      work%crit_boundary = 0.D0
+      !
+      work%aborted = .false.
+      work%var_est_failed = .false.
+      work%boundary = .false.
+      !
+      work%total_freq_supplied_int = 0
+      work%total_freq_subpop_int = 0
+      work%total_freq_use_data_int = 0
+      work%total_freq_use_prior = 0.D0
+      !
       if( allocated( work%loglik_vec ) ) then
          deallocate( work%loglik_vec, stat=status )
          if( status /= 0 ) goto 800
@@ -1340,6 +1430,22 @@ module cvam_engine
       end if
       if( allocated( work%beta_tmp ) ) then
          deallocate( work%beta_tmp, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%pimat_new ) ) then
+         deallocate( work%pimat_new, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%pimat_nr ) ) then
+         deallocate( work%pimat_nr, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%pimat_nr_new ) ) then
+         deallocate( work%pimat_nr_new, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%pimat_tmp ) ) then
+         deallocate( work%pimat_tmp, stat=status )
          if( status /= 0 ) goto 800
       end if
       work%loglik = 0.D0
@@ -1432,6 +1538,26 @@ module cvam_engine
       end if
       if( allocated( work%wkddB ) ) then
          deallocate( work%wkddB, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%wkrdA ) ) then
+         deallocate( work%wkrdA, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%iter_em_saturated ) ) then
+         deallocate( work%iter_em_saturated, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%converged_em_saturated ) ) then
+         deallocate( work%converged_em_saturated, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%pi_saturated ) ) then
+         deallocate( work%pi_saturated, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%pi_saturated_new ) ) then
+         deallocate( work%pi_saturated_new, stat=status )
          if( status /= 0 ) goto 800
       end if
       ! normal exit
@@ -1584,7 +1710,39 @@ module cvam_engine
            == RETURN_FAIL ) goto 800
       if( nullify_workspace_type_cvam_lcmeas( work%lcmeas, err ) &
            == RETURN_FAIL ) goto 800
-      !
+      work%survey_mode = .false.
+      work%n_strat = 0
+      if( allocated( work%n_clus ) ) then
+         deallocate( work%n_clus, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      work%n_clus_tot = 0
+      if( allocated( work%stratum ) ) then
+         deallocate( work%stratum, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%cluster ) ) then
+         deallocate( work%cluster, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%subpop ) ) then
+         deallocate( work%subpop, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%weight ) ) then
+         deallocate( work%weight, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      if( allocated( work%scaled_weight ) ) then
+         deallocate( work%scaled_weight, stat=status )
+         if( status /= 0 ) goto 800
+      end if
+      work%n_subpop = 0
+      work%total_weight_subpop = 0.D0
+      if( allocated( work%stratum_for_cluster ) ) then
+         deallocate( work%stratum_for_cluster, stat=status )
+         if( status /= 0 ) goto 800
+      end if
       ! normal exit
       answer = RETURN_SUCCESS
       return
@@ -4641,8 +4799,8 @@ module cvam_engine
                work%Mx(i,j) = work%Mx(i,j) + sum
             end do
             !
-            if( work%cycle_done ) exit
          end if
+         if( work%cycle_done ) exit
       end do
 10    continue
       ! normal exit
@@ -8341,10 +8499,11 @@ module cvam_engine
     end function draw_approx_bayes_beta
     !##################################################################
     integer(kind=our_int) function run_mlogit( n, p, r, x, y, &
-         baseline, iter_max, criterion, &
-         iter, converged_int, loglik, score, hess, &
+         baseline, iter_max, crit_nr, crit_boundary, &
+         iter, converged_int, boundary_int, loglik, score, hess, &
          beta, beta_vec, vhat_beta_vec, pi_mat, err ) result(answer)
       ! fits a baseline-category logit model using Newton-Raphson
+      ! data are provided in wide format 
       implicit none
       ! inputs
       integer(kind=our_int), intent(in) :: n   ! number of observations
@@ -8354,10 +8513,12 @@ module cvam_engine
       real(kind=our_dble), intent(in) :: y(:,:)
       integer(kind=our_int), intent(in) :: baseline   ! baseline category
       integer(kind=our_int), intent(in) :: iter_max
-      real(kind=our_dble), intent(in) :: criterion
+      real(kind=our_dble), intent(in) :: crit_nr
+      real(kind=our_dble), intent(in) :: crit_boundary
       ! outputs
       integer(kind=our_int), intent(out) :: iter
       integer(kind=our_int), intent(out) :: converged_int
+      integer(kind=our_int), intent(out) :: boundary_int
       real(kind=our_dble), intent(out) :: loglik
       real(kind=our_dble), intent(out) :: score(:)
       real(kind=our_dble), intent(out) :: hess(:,:)
@@ -8369,27 +8530,28 @@ module cvam_engine
       type(error_type), intent(inout) :: err
       ! declare locals
       real(kind=our_dble), allocatable :: wkrA(:), wkrB(:), &
-           wkprA(:), wkprprA(:,:), nvec(:), beta_vec_new(:)
+           wkprA(:), wkprprA(:,:), nvec(:), beta_vec_new(:), pi_mat_new(:,:)
       real(kind=our_dble) :: max_diff, sum
       integer(kind=our_int) :: status, i, j, k, jj
-      logical :: converged, aborted
+      logical :: converged, aborted, boundary
       character(len=*), parameter :: &
            subname = "run_mlogit"
       ! begin
       answer = RETURN_FAIL
       !####
       if( check_mlogit_args( n, p, r, x, y, &
-         baseline, iter_max, criterion, &
+         baseline, iter_max, crit_nr, &
          score, hess, &
          beta, beta_vec, vhat_beta_vec, pi_mat, &
          err ) == RETURN_FAIL ) goto 800
       allocate( wkrA(r), wkrB(r), &
            wkprA( p*(r-1) ), wkprprA( p*(r-1), p*(r-1) ), &
-           nvec(n), beta_vec_new( p*(r-1) ), &
+           nvec(n), beta_vec_new( p*(r-1) ), pi_mat_new(n,r), &
            stat=status )
       if( status /= 0 ) goto 100
       if( create_nvec( y, nvec, err ) == RETURN_FAIL ) goto 800
       beta_vec_new(:) = 0.D0
+      pi_mat_new(:,:) = 0.D0
       iter = 0
       converged = .false.
       converged_int = 0
@@ -8399,9 +8561,18 @@ module cvam_engine
          aborted = .true.  ! set to .false. at end of iteration
          iter = iter + 1
          beta_vec(:) = beta_vec_new(:)
-         if( compute_score_hess_mlogit(x, y, baseline, nvec, &
-              beta_vec, loglik, score, wkprprA, pi_mat, &
-              err, wkrA, wkrB ) == RETURN_FAIL ) goto 20
+         pi_mat(:,:) = pi_mat_new(:,:)
+         if( iter == 1 ) then
+            if( compute_score_hess_mlogit(x, y, baseline, nvec, &
+                 beta_vec, loglik, score, wkprprA, pi_mat, &
+                 err, wkrA, wkrB, &
+                 skip_compute_pi_mat = .false. ) == RETURN_FAIL ) goto 20
+         else
+            if( compute_score_hess_mlogit(x, y, baseline, nvec, &
+                 beta_vec, loglik, score, wkprprA, pi_mat, &
+                 err, wkrA, wkrB, &
+                 skip_compute_pi_mat = .true. ) == RETURN_FAIL ) goto 20
+         end if
          hess(:,:) = - wkprprA(:,:)
          if( cholesky_in_place(wkprprA, err ) == RETURN_FAIL ) then
             call err_handle(err, 1, &
@@ -8423,12 +8594,17 @@ module cvam_engine
             beta_vec_new(j) = beta_vec(j) + sum
          end do
          !
+         if( compute_pi_mat( x, baseline, beta_vec_new, pi_mat_new, &
+              err, wkrA, wkrB ) == RETURN_FAIL ) goto 800
+         !
          max_diff = 0.D0
-         do i = 1, size(beta_vec)
-            max_diff = max( max_diff, &
-                 abs( beta_vec_new(i) - beta_vec(i) ) )
+         do i = 1, n
+            do j = 1, r
+               max_diff = max( max_diff, &
+                    abs( pi_mat_new(i,j) - pi_mat(i,j) ) )
+            end do
          end do
-         if( max_diff <= criterion ) then
+         if( max_diff <= crit_nr ) then
             converged = .true.
             converged_int = 1
          end if
@@ -8449,6 +8625,25 @@ module cvam_engine
          call err_handle(err, 2, whichsub = subname, whichmod = modname )
       end if
       !
+      boundary = .false.
+      do i = 1, n
+         do j = 1, r
+            if( pi_mat_new(i,j) <= crit_boundary ) then
+               boundary = .true.
+               exit
+            end if
+         end do
+         if( boundary ) exit
+      end do
+      if( boundary ) then
+         call err_handle(err, 1, &
+              comment = "Estimate at or near boundary" )
+         boundary_int = 1
+      else
+         boundary_int = 0
+      end if
+      !
+      pi_mat(:,:) = pi_mat_new(:,:)
       beta_vec(:) = beta_vec_new(:)
       beta(:,baseline) = 0.D0 
       jj = 0
@@ -8476,10 +8671,11 @@ module cvam_engine
       if( allocated(wkprprA) ) deallocate(wkprprA)
       if( allocated(nvec) ) deallocate(nvec)
       if( allocated(beta_vec_new) ) deallocate(beta_vec_new)
+      if( allocated(pi_mat_new) ) deallocate(pi_mat_new)
     end function run_mlogit
     !##################################################################
     integer(kind=our_int) function check_mlogit_args( n, p, r, x, y, &
-         baseline, iter_max, criterion, score, hess, &
+         baseline, iter_max, crit_nr, score, hess, &
          beta, beta_vec, vhat_beta_vec, pi_mat, err ) result(answer)
       implicit none
       ! inputs
@@ -8490,7 +8686,7 @@ module cvam_engine
       real(kind=our_dble), intent(in) :: y(:,:)
       integer(kind=our_int), intent(in) :: baseline   ! baseline category
       integer(kind=our_int), intent(in) :: iter_max
-      real(kind=our_dble), intent(in) :: criterion
+      real(kind=our_dble), intent(in) :: crit_nr
       ! outputs
       real(kind=our_dble), intent(out) :: score(:)
       real(kind=our_dble), intent(out) :: hess(:,:)
@@ -8510,7 +8706,7 @@ module cvam_engine
       if( ( size(y,1) /= n ) .or. ( size(y,2) /= r ) ) goto 30
       if( ( baseline < 1 ) .or. ( baseline > r ) ) goto 40
       if( iter_max < 0 ) goto 50
-      if( criterion <= 0.D0 ) goto 60
+      if( crit_nr <= 0.D0 ) goto 60
       if( size(score) /= p*(r-1) ) goto 70
       if( size(hess,1) /= p*(r-1) ) goto 80
       if( size(hess,2) /= p*(r-1) ) goto 80
@@ -8536,7 +8732,7 @@ module cvam_engine
             comment = "Argument iter_max is negative" )
       goto 800
 60    call err_handle(err, 1, &
-            comment = "Argument criterion is not positive" )
+            comment = "Argument crit_nr is not positive" )
       goto 800
 70    call err_handle(err, 1, &
             comment = "Argument score has incorrect size" )
@@ -8603,7 +8799,7 @@ module cvam_engine
     integer(kind=our_int) function compute_score_hess_mlogit( &
          x, y, baseline, nvec, beta_vec, loglik, &
          score, neg_hess, pi_mat, &
-         err, wkrA, wkrB ) &
+         err, wkrA, wkrB, skip_compute_pi_mat ) &
          result(answer)
       implicit none
       ! inputs
@@ -8616,18 +8812,27 @@ module cvam_engine
       real(kind=our_dble), intent(out) :: loglik
       real(kind=our_dble), intent(out) :: score(:)
       real(kind=our_dble), intent(out) :: neg_hess(:,:)
-      real(kind=our_dble), intent(out) :: pi_mat(:,:)
+      real(kind=our_dble), intent(inout) :: pi_mat(:,:)
       ! declare workspaces
       type(error_type), intent(inout) :: err
       real(kind=our_dble), intent(inout) :: wkrA(:)
       real(kind=our_dble), intent(inout) :: wkrB(:)
+      ! optionals
+      logical, intent(in), optional :: skip_compute_pi_mat
       ! declare locals
       integer(kind=our_int) :: n, p, r, i, j, jj, k, kk, el, kprime, m
       real(kind=our_dble) :: q1, q2, q3
+      logical :: skip_compute_pi_mat_local
       character(len=*), parameter :: &
            subname = "compute_score_hess_mlogit"
       ! begin
       answer = RETURN_FAIL
+      !####
+      if( present( skip_compute_pi_mat ) ) then
+         skip_compute_pi_mat_local = skip_compute_pi_mat
+      else
+         skip_compute_pi_mat_local = .false.
+      end if
       !####
       n = size(x,1)
       p = size(x,2)
@@ -8635,8 +8840,10 @@ module cvam_engine
       loglik = 0.D0
       score(:) = 0.D0
       neg_hess(:,:) = 0.D0
-      if( compute_pi_mat( x, baseline, beta_vec, pi_mat, err, wkrA, wkrB ) &
-           == RETURN_FAIL ) goto 800
+      if( .not. skip_compute_pi_mat_local ) then
+         if( compute_pi_mat( x, baseline, beta_vec, pi_mat, err, wkrA, wkrB ) &
+              == RETURN_FAIL ) goto 800
+      end if
       do i = 1, n
          ! increment loglik
          do j = 1, r
@@ -8939,20 +9146,6 @@ module cvam_engine
            beta_vec, loglik, score, wkprprA, pi_mat, pi_star, &
            err, wkrA, wkrB ) == RETURN_FAIL ) goto 800
       hess(:,:) = - wkprprA(:,:)
-!      neg_hess_inv(:,:) = 0.D0
-!      if( cholesky_in_place( wkprprA, err ) == RETURN_FAIL ) then
-!         call err_handle(err, 1, &
-!              comment = "Hessian matrix not neg-def" )
-!         goto 20
-!      end if
-!      if( invert_lower( wkprprA, err ) == RETURN_FAIL ) then
-!         call err_handle(err, 1, &
-!              comment = "Hessian matrix apparently singular" )
-!         goto 20
-!      end if
-!      if( premult_lower_by_transpose( wkprprA, neg_hess_inv, &
-!           err) == RETURN_FAIL ) goto 800
-!20    continue
       ! normal exit
       answer = RETURN_SUCCESS
       goto 999
@@ -9162,20 +9355,30 @@ module cvam_engine
     end function compute_score_hess_lcprev
     !##################################################################
     integer(kind=our_int) function run_cvam_logit( &
-         method_int, x, ystar, freq_int, &
+         model_type_int, method_int, x, ystar, freq_int, &
          n_levels_matrix, packed_map, baseline, &
-         row_posn_data_patt, freq_int_data_patt, row_posn_cov_patt, &
-         cov_patt_for_data_patt, &
+         row_posn_data_patt, freq_int_data_patt, subpop_int_data_patt, &
+         row_posn_cov_patt, &
+         cov_patt_for_data_patt, reverse_patt, &
          prior_int, crit_em_null, flatten_em_null, prior_freq_tot_DAP, &
-         crit_em, crit_nr, &
+         crit_em, crit_nr, crit_boundary, &
          iter_max_em_null, iter_max_em, start_val_use_int, iter_max_nr, &
-         beta, &
+         survey_mode_int, n_strat, n_clus, design_int, weight, &
+         scaled_weight_data_patt, &
+         pimat, beta, &
          work, err, &
          proportions_DAP, &
-         iter, converged, max_diff, loglik, logP, vhat_beta &
+         iter, converged, max_diff, loglik, logP, &
+         score, vhat_beta, pimat_big, &
+         total_freq_supplied_int, total_freq_subpop_int, &
+         total_freq_use_data_int, total_freq_use_prior, &
+         n_cov_patt_empty, n_cov_patt_all_missing, &
+         n_cov_patt_all_zero, n_param_estimated, degrees_of_freedom, &
+         aborted_int, var_est_failed_int, boundary_int &
          ) result(answer)
       implicit none
       ! declare inputs
+      integer(kind=our_int), intent(in) :: model_type_int
       integer(kind=our_int), intent(in) :: method_int
       real(kind=our_dble), intent(in) :: x(:,:)
       integer(kind=our_int), intent(in) :: ystar(:,:)
@@ -9185,19 +9388,29 @@ module cvam_engine
       integer(kind=our_int), intent(in) :: baseline
       integer(kind=our_int), intent(in) :: row_posn_data_patt(:)
       integer(kind=our_int), intent(in) :: freq_int_data_patt(:)
+      integer(kind=our_int), intent(in) :: subpop_int_data_patt(:)
       integer(kind=our_int), intent(in) :: row_posn_cov_patt(:)
       integer(kind=our_int), intent(in) :: cov_patt_for_data_patt(:)
+      integer(kind=our_int), intent(in) :: reverse_patt(:,:)
       integer(kind=our_int), intent(in) :: prior_int
       real(kind=our_dble), intent(in) :: crit_em_null
       real(kind=our_dble), intent(in) :: flatten_em_null
       real(kind=our_dble), intent(in) :: prior_freq_tot_DAP
       real(kind=our_dble), intent(in) :: crit_em
       real(kind=our_dble), intent(in) :: crit_nr
+      real(kind=our_dble), intent(in) :: crit_boundary
       integer(kind=our_int), intent(in) :: iter_max_em_null
       integer(kind=our_int), intent(in) :: iter_max_em
       integer(kind=our_int), intent(in) :: start_val_use_int
       integer(kind=our_int), intent(in) :: iter_max_nr
+      integer(kind=our_int), intent(in) :: survey_mode_int
+      integer(kind=our_int), intent(in) :: n_strat
+      integer(kind=our_int), intent(in) :: n_clus(:)
+      integer(kind=our_int), intent(in) :: design_int(:,:)
+      real(kind=our_dble), intent(in) :: weight(:)
+      real(kind=our_dble), intent(in) :: scaled_weight_data_patt(:)
       ! inouts
+      real(kind=our_dble), intent(inout) :: pimat(:,:)
       real(kind=our_dble), intent(inout) :: beta(:,:)
       ! workspaces
       type(workspace_type_cvam_basic), intent(inout) :: work
@@ -9209,24 +9422,60 @@ module cvam_engine
       real(kind=our_dble), intent(out) :: max_diff
       real(kind=our_dble), intent(out) :: loglik(:)
       real(kind=our_dble), intent(out) :: logP(:)
+      real(kind=our_dble), intent(out) :: score(:)
       real(kind=our_dble), intent(out) :: vhat_beta(:,:)
+      real(kind=our_dble), intent(out) :: pimat_big(:,:)
+      integer(kind=our_int), intent(out) :: total_freq_supplied_int
+      integer(kind=our_int), intent(out) :: total_freq_subpop_int
+      integer(kind=our_int), intent(out) :: total_freq_use_data_int
+      real(kind=our_dble), intent(out) :: total_freq_use_prior
+      integer(kind=our_int), intent(out) :: n_cov_patt_empty
+      integer(kind=our_int), intent(out) :: n_cov_patt_all_missing
+      integer(kind=our_int), intent(out) :: n_cov_patt_all_zero
+      integer(kind=our_int), intent(out) :: n_param_estimated
+      integer(kind=our_int), intent(out) :: degrees_of_freedom
+      integer(kind=our_int), intent(out) :: aborted_int
+      integer(kind=our_int), intent(out) :: var_est_failed_int
+      integer(kind=our_int), intent(out) :: boundary_int
       ! locals
       integer(kind=our_int) :: ijunk
       character(len=*), parameter :: subname = "run_cvam_logit"
       ! begin
       answer = RETURN_FAIL
       work%model_type = "logit"
+      aborted_int = 0
+      var_est_failed_int = 0
+      boundary_int = 0
       if( put_data_into_basic_workspace( x, ystar, freq_int, &
            n_levels_matrix, packed_map, work, err ) &
            == RETURN_FAIL ) goto 800
-      if( setup_logit_workspace( method_int, baseline, &
-           row_posn_data_patt, freq_int_data_patt, row_posn_cov_patt, &
-           cov_patt_for_data_patt, &
+      if( setup_logit_workspace( model_type_int, method_int, baseline, &
+           row_posn_data_patt, freq_int_data_patt, &
+           row_posn_cov_patt, &
+           cov_patt_for_data_patt, reverse_patt, &
            prior_int, crit_em_null, flatten_em_null, prior_freq_tot_DAP, &
-           crit_em, crit_nr, &
+           crit_em, crit_nr, crit_boundary, &
            iter_max_em_null, iter_max_em, start_val_use_int, iter_max_nr, &
-           beta, &
+           pimat, beta, &
            work, err ) == RETURN_FAIL ) goto 800
+      if( put_survey_objects_into_basic_workspace( survey_mode_int, n_strat, &
+           n_clus, design_int, weight, &
+           work, err ) == RETURN_FAIL ) goto 800
+      if( apply_survey_weight_logit( scaled_weight_data_patt, &
+           subpop_int_data_patt, work, &
+           work%logit, err ) == RETURN_FAIL ) goto 800
+      if( create_data_and_prior_use_objects_logit( work, work%logit, err ) &
+           == RETURN_FAIL ) goto 800
+      total_freq_supplied_int = work%logit%total_freq_supplied_int
+      total_freq_subpop_int = work%logit%total_freq_subpop_int
+      total_freq_use_data_int = work%logit%total_freq_use_data_int
+      total_freq_use_prior = work%logit%total_freq_use_prior
+      n_cov_patt_empty = work%logit%n_cov_patt_empty
+      n_cov_patt_all_missing = work%logit%n_cov_patt_all_missing
+      n_cov_patt_all_zero = work%logit%n_cov_patt_all_zero
+      n_param_estimated = work%logit%n_param_estimated
+      degrees_of_freedom = work%logit%degrees_of_freedom      
+      !
       if( work%logit%prior == "DAP" ) then
          if( run_logit_em_null( work, work%logit, err ) &
               == RETURN_FAIL ) goto 800
@@ -9245,34 +9494,64 @@ module cvam_engine
          proportions_DAP(:) = work%logit%pinull_new(:)
       end if
       if( work%logit%method == "EM" ) then
-         if( run_logit_em( work, work%logit, err ) == RETURN_FAIL ) goto 800
-         iter = work%logit%iter_em
-         converged = work%logit%converged_em
-         max_diff = work%logit%max_diff_em
-         work%logit%beta(:) = work%logit%beta_new(:)
-         if( get_beta_logit( work%logit, beta, err ) == RETURN_FAIL ) goto 800
-         if( size(loglik) < work%logit%iter_em ) goto 210
-         loglik(:) = 0.D0
-         loglik( 1:work%logit%iter_em ) = &
-              work%logit%loglik_vec( 1:work%logit%iter_em )
-         if( size(logP) < work%logit%iter_em ) goto 220
-         logP(:) = 0.D0
-         logP( 1:work%logit%iter_em ) = &
-              work%logit%logP_vec( 1:work%logit%iter_em )
-         if( size(vhat_beta, 1) /= work%logit%d ) goto 230
-         if( size(vhat_beta, 2) /= work%logit%d ) goto 230
-         vhat_beta(:,:) = work%logit%vhat_beta(:,:)
+         if( work%logit%model_type == "saturated" ) then
+            if( run_logit_em_saturated( work, work%logit, err ) &
+                 == RETURN_FAIL ) goto 800
+            iter = work%logit%iter_em
+            converged = work%logit%converged_em
+            max_diff = work%logit%max_diff_em
+            if( size(loglik) < 1 ) goto 210
+            loglik(:) = work%logit%loglik
+            if( size(logP) < 1 ) goto 220
+            logP(:) = work%logit%logprior + work%logit%loglik
+            pimat(:,:) = work%logit%pimat(:,:)
+            beta(:,:) = 0.D0
+         else if( work%logit%model_type == "non-saturated" ) then
+            if( run_logit_em( work, work%logit, err ) == RETURN_FAIL ) goto 800
+            iter = work%logit%iter_em
+            converged = work%logit%converged_em
+            max_diff = work%logit%max_diff_em
+            pimat(:,:) = work%logit%pimat(:,:)
+            if( get_beta_logit( work%logit, beta, err ) &
+                 == RETURN_FAIL ) goto 800
+            if( size(loglik) < work%logit%iter_em ) goto 210
+            loglik(:) = 0.D0
+            loglik( 1:work%logit%iter_em ) = &
+                 work%logit%loglik_vec( 1:work%logit%iter_em )
+            if( size(logP) < work%logit%iter_em ) goto 220
+            logP(:) = 0.D0
+            logP( 1:work%logit%iter_em ) = &
+                 work%logit%logP_vec( 1:work%logit%iter_em )
+            if( size(score, 1) /= work%logit%d ) goto 225
+            score(:) = work%logit%score(:)
+            if( size(vhat_beta, 1) /= work%logit%d ) goto 230
+            if( size(vhat_beta, 2) /= work%logit%d ) goto 230
+            vhat_beta(:,:) = work%logit%vhat_beta(:,:)
+         else
+            goto 80
+         end if
+         if( work%logit%aborted ) aborted_int = 1
+         if( work%logit%var_est_failed ) var_est_failed_int = 1
+         if( work%logit%boundary ) boundary_int = 1
+         !
+         if( size(pimat_big, 1) /= work%logit%n ) goto 240
+         if( size(pimat_big, 2) /= work%logit%r ) goto 240
+         if( get_pimat_big_logit( work, work%logit, pimat_big, err ) &
+              == RETURN_FAIL ) goto 800
       else if( work%logit%method == "MCMC" ) then
          !
       else
          goto 100
       end if
-
+      
 
       ! normal exit
       answer = RETURN_SUCCESS
       goto 999
       ! error traps
+80    call err_handle(err, 1, &
+            comment = "Model_type not recognized" )
+      goto 800
 100   call err_handle(err, 1, &
             comment = "Method not recognized" )
       goto 800
@@ -9285,8 +9564,14 @@ module cvam_engine
 220   call err_handle(err, 1, &
             comment = "Array logP has insufficient size" )
       goto 800
+225   call err_handle(err, 1, &
+            comment = "Array score has incorrect size" )
+      goto 800
 230   call err_handle(err, 1, &
             comment = "Array vhat_beta has incorrect size" )
+      goto 800
+240   call err_handle(err, 1, &
+            comment = "Array pimat_big has incorrect size" )
       goto 800
 800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
       goto 999
@@ -9429,49 +9714,86 @@ module cvam_engine
     end function put_data_into_basic_workspace
     !##################################################################
     integer(kind=our_int) function setup_logit_workspace( &
-         method_int, baseline, row_posn_data_patt, freq_int_data_patt, &
-         row_posn_cov_patt, cov_patt_for_data_patt, &
+         model_type_int, &
+         method_int, baseline, row_posn_data_patt, &
+         freq_int_data_patt, &
+         row_posn_cov_patt, cov_patt_for_data_patt, reverse_patt, &
          prior_int, crit_em_null, flatten_em_null, prior_freq_tot_DAP, &
-         crit_em, crit_nr, &
+         crit_em, crit_nr, crit_boundary, &
          iter_max_em_null, iter_max_em, start_val_use_int, iter_max_nr, &
-         beta, &
-         work, err ) &
+         pimat, beta, &
+         work, err, for_prediction, mvcode ) &
          result(answer)
       ! create workspace objects
       implicit none
       ! declare inputs
+      integer(kind=our_int), intent(in) :: model_type_int
       integer(kind=our_int), intent(in) :: method_int
       integer(kind=our_int), intent(in) :: baseline
       integer(kind=our_int), intent(in) :: row_posn_data_patt(:)
       integer(kind=our_int), intent(in) :: freq_int_data_patt(:)
       integer(kind=our_int), intent(in) :: row_posn_cov_patt(:)
       integer(kind=our_int), intent(in) :: cov_patt_for_data_patt(:)
+      integer(kind=our_int), intent(in) :: reverse_patt(:,:)
       integer(kind=our_int), intent(in) :: prior_int
       real(kind=our_dble), intent(in) :: crit_em_null
       real(kind=our_dble), intent(in) :: flatten_em_null
       real(kind=our_dble), intent(in) :: prior_freq_tot_DAP
       real(kind=our_dble), intent(in) :: crit_em
       real(kind=our_dble), intent(in) :: crit_nr
+      real(kind=our_dble), intent(in) :: crit_boundary
       integer(kind=our_int), intent(in) :: iter_max_em_null
       integer(kind=our_int), intent(in) :: iter_max_em
       integer(kind=our_int), intent(in) :: start_val_use_int
       integer(kind=our_int), intent(in) :: iter_max_nr
+      real(kind=our_dble), intent(in) :: pimat(:,:)
       real(kind=our_dble), intent(in) :: beta(:,:)
       ! declare workspaces
       type(workspace_type_cvam_basic), intent(inout) :: work
       type(error_type), intent(inout) :: err
+      ! optionals
+      ! if for_prediction is .TRUE., then some data checks are suppressed,
+      ! and missing values may be supplied in pimat
+      logical, intent(in), optional :: for_prediction
+      ! if mvcode is supplied, then rows of pimat_new corresponding to
+      ! empty covariate patterns are set to this value; otherwise they are
+      ! set to -1.D0
+      real(kind=our_dble), intent(in), optional :: mvcode
       ! declare locals
+      real(kind=our_dble) :: sum, mvcode_local
       integer(kind=our_int) :: status, i, isum, k, cur_cov_patt, &
-           cov_patt, data_patt, posn, j
+           cov_patt, data_patt, posn, j, mvcode_y
+      logical :: for_prediction_local, mvcode_supplied, mvfound
       character(len=*), parameter :: &
            subname = "setup_logit_workspace"
       ! begin
       answer = RETURN_FAIL
+      if( present( for_prediction ) ) then
+         for_prediction_local = for_prediction
+      else
+         for_prediction_local = .false.
+      end if
+      if( present( mvcode ) ) then
+         mvcode_local = mvcode
+         mvcode_supplied = .true.
+      else
+         mvcode_local = -1.D0
+         mvcode_supplied = .false.
+      end if
       if( work%model_type /= "logit" ) goto 50
+      if( model_type_int == 1 ) then
+         work%logit%model_type = "saturated"
+      else if( model_type_int == 2 ) then
+         work%logit%model_type = "non-saturated"
+      else
+         goto 55
+      end if
       if( method_int == 1 ) then
          work%logit%method = "EM"
       else if( method_int == 2 ) then
          work%logit%method = "MCMC"
+      else if( method_int == 3 ) then
+         work%logit%method = "predict"
       else
          goto 120
       end if
@@ -9501,7 +9823,9 @@ module cvam_engine
       work%logit%d = work%logit%p  * ( work%logit%r - 1 )
       !
       if( size(row_posn_data_patt) < 1 ) goto 140
-      if( size(row_posn_data_patt) > work%nrow_data ) goto 140
+      if( .not. for_prediction_local ) then
+         if( size(row_posn_data_patt) > work%nrow_data ) goto 140
+      end if
       work%logit%n_data_patt = size(row_posn_data_patt)
       if( size(freq_int_data_patt) /= work%logit%n_data_patt ) goto 150
       allocate( work%logit%row_posn_data_patt( work%logit%n_data_patt ), &
@@ -9521,16 +9845,22 @@ module cvam_engine
          work%logit%freq_data_patt(i) = real( freq_int_data_patt(i), &
               our_dble )
       end do
-      if( isum /= work%data_freq_tot ) goto 180
+      if( .not. for_prediction_local ) then
+         if( isum /= work%data_freq_tot ) goto 180
+      end if
       !
       if( size(row_posn_cov_patt) < 1 ) goto 190 
-      if( size(row_posn_cov_patt) > work%nrow_data ) goto 190
+      if( .not. for_prediction_local ) then
+         if( size(row_posn_cov_patt) > work%nrow_data ) goto 190
+      end if
       work%logit%n_cov_patt = size(row_posn_cov_patt)
       allocate( work%logit%row_posn_cov_patt(work%logit%n_cov_patt), &
            stat=status )
       if( status /= 0 ) goto 100
       do i = 1, work%logit%n_cov_patt
-         if( row_posn_cov_patt(i) < 1 ) goto 200
+         ! 0 means the cov patt is not found in model matrix;
+         ! sometimes needed for prediction
+         if( row_posn_cov_patt(i) < 0 ) goto 200
          if( row_posn_cov_patt(i) > work%nrow_data ) goto 200
          work%logit%row_posn_cov_patt(i) = row_posn_cov_patt(i)
       end do
@@ -9568,6 +9898,69 @@ module cvam_engine
       work%logit%data_patt_fin( work%logit%n_cov_patt ) = &
            work%logit%n_data_patt
       !
+      allocate( work%logit%cov_patt_all_missing(work%logit%n_cov_patt), &
+           work%logit%cov_patt_all_zero(work%logit%n_cov_patt), &
+           work%logit%cov_patt_empty(work%logit%n_cov_patt), &
+           stat=status )
+      if( status /= 0 ) goto 100
+      work%logit%cov_patt_all_missing(:) = .true.
+      work%logit%n_cov_patt_all_missing = 0
+      work%logit%cov_patt_all_zero(:) = .true.
+      work%logit%n_cov_patt_all_zero = 0
+      work%logit%cov_patt_empty(:) = .true.
+      work%logit%n_cov_patt_empty = 0
+      mvcode_y = work%mvcode( work%logit%ycol )
+      do cov_patt = 1, work%logit%n_cov_patt
+         do data_patt = work%logit%data_patt_st( cov_patt ), &
+              work%logit%data_patt_fin( cov_patt )
+            i = work%logit%row_posn_data_patt( data_patt )
+            if( work%ystar(i, work%logit%ycol ) /= mvcode_y ) then
+               work%logit%cov_patt_all_missing( cov_patt ) = .false.
+               exit
+            end if
+         end do
+         if( work%logit%cov_patt_all_missing( cov_patt ) ) then
+            work%logit%n_cov_patt_all_missing = &
+                 work%logit%n_cov_patt_all_missing + 1
+         end if
+         do data_patt = work%logit%data_patt_st( cov_patt ), &
+              work%logit%data_patt_fin( cov_patt )
+            if( work%logit%freq_int_data_patt( data_patt ) /= 0 ) then
+               work%logit%cov_patt_all_zero( cov_patt ) = .false.
+               exit
+            end if
+         end do
+         if( work%logit%cov_patt_all_zero( cov_patt ) ) then
+            work%logit%n_cov_patt_all_zero = &
+                 work%logit%n_cov_patt_all_zero + 1
+         end if
+         work%logit%cov_patt_empty( cov_patt ) = &
+              work%logit%cov_patt_all_missing( cov_patt ) .or. &
+              work%logit%cov_patt_all_zero( cov_patt )
+         if( work%logit%cov_patt_empty( cov_patt ) ) then
+            work%logit%n_cov_patt_empty = &
+                 work%logit%n_cov_patt_empty + 1
+         end if
+      end do
+      !
+      if( size( reverse_patt, 1 ) /= work%logit%nrow ) goto 207
+      if( size( reverse_patt, 2 ) /= 2 ) goto 207
+      allocate( work%logit%reverse_cov_patt( work%logit%nrow ), &
+           work%logit%reverse_data_patt( work%logit%nrow ), &
+           stat=status )
+      if( status /= 0 ) goto 100
+      do i = 1, work%logit%nrow
+         ! 0 indicates that the cov pattern in the model matrix is
+         ! not reflected in pimat, which might happen for prediction
+         ! with a saturated model
+         posn = reverse_patt( i, 1 )
+         if( ( posn < 0 ) .or. ( posn > work%logit%n_cov_patt ) ) goto 208
+         work%logit%reverse_cov_patt(i) = posn
+         posn = reverse_patt( i, 2 )
+         if( ( posn < 0 ) .or. ( posn > work%logit%n_data_patt ) ) goto 209
+         work%logit%reverse_data_patt(i) = posn
+      end do
+      !
       allocate( work%logit%ystar_table( work%n_levels(1) ), &
            stat=status )
       if( status /= 0 ) goto 100
@@ -9604,7 +9997,9 @@ module cvam_engine
       work%logit%flatten_em_null = flatten_em_null
       if( iter_max_em_null < 0 ) goto 320
       work%logit%iter_max_em_null = iter_max_em_null
-      if( prior_freq_tot_DAP < 0.D0 ) goto 330
+      !
+      if( ( work%logit%prior == "DAP" ) .and. &
+           ( prior_freq_tot_DAP <= 0.D0 ) ) goto 330
       work%logit%prior_freq_tot_DAP = prior_freq_tot_DAP
       !
       if( crit_em <= 0.D0 ) goto 340
@@ -9615,6 +10010,37 @@ module cvam_engine
       work%logit%iter_max_em = iter_max_em
       if( iter_max_nr < 0 ) goto 351
       work%logit%iter_max_nr = iter_max_nr
+      if( crit_boundary <= 0.D0 ) goto 352
+      work%logit%crit_boundary = crit_boundary
+      !
+      if( work%logit%model_type == "saturated" ) then
+         if( work%logit%prior == "none" ) then
+            work%logit%n_param_estimated = ( work%logit%n_cov_patt - &
+                 work%logit%n_cov_patt_empty ) * &
+                 ( work%logit%r - 1 )
+         else if( work%logit%prior == "DAP" ) then
+            work%logit%n_param_estimated = work%logit%n_cov_patt * &
+                 ( work%logit%r - 1 )
+         else 
+            goto 250
+         end if
+         work%logit%degrees_of_freedom = 0
+      else if( work%logit%model_type == "non-saturated" ) then
+         work%logit%n_param_estimated = work%logit%d
+         if( work%logit%prior == "none" ) then
+            work%logit%degrees_of_freedom = ( work%logit%n_cov_patt - &
+                 work%logit%n_cov_patt_empty ) * &
+                 ( work%logit%r - 1 ) - work%logit%n_param_estimated
+         else if( work%logit%prior == "DAP" ) then
+            work%logit%degrees_of_freedom = work%logit%n_cov_patt * &
+                 ( work%logit%r - 1 ) - work%logit%n_param_estimated
+         else 
+            goto 250
+         end if
+      else
+         goto 80
+      end if
+      !
       allocate( &
            work%logit%loglik_vec( work%logit%iter_max_em ), &
            work%logit%logP_vec( work%logit%iter_max_em ), &
@@ -9630,23 +10056,67 @@ module cvam_engine
            stat = status )
       if( status /= 0 ) goto 100
       !
+      allocate( &
+           work%logit%pimat_new( work%logit%n_cov_patt, work%logit%r ), &
+           work%logit%pimat_nr( work%logit%n_cov_patt, work%logit%r ), &
+           work%logit%pimat_nr_new( work%logit%n_cov_patt, work%logit%r ), &
+           work%logit%pimat_tmp( work%logit%n_cov_patt, work%logit%r ), &
+           stat = status )
+      if( status /= 0 ) goto 100
+      !
+      if( size( pimat, 1 ) /= work%logit%n_cov_patt ) goto 402
+      if( size( pimat, 2 ) /= work%logit%r ) goto 402
+      if( size( beta, 1 ) /= work%logit%p ) goto 405
+      if( size( beta, 2 ) /= work%logit%r ) goto 405
+      !
       if( start_val_use_int == 0 ) then
          work%logit%start_val_use = .false.
+         work%logit%pimat_new(:,:) = 1.D0 / real( work%logit%r, our_dble )
          work%logit%beta_new(:) = 0.D0
       else if( start_val_use_int == 1 ) then
          work%logit%start_val_use = .true.
-         k = work%logit%baseline
-         do j = 1, work%logit%p
-            if( beta(j,k) /= 0.D0 ) goto 410
-         end do
-         posn = 0
-         do k = 1, work%logit%r
-            if( k == work%logit%baseline ) cycle
-            do j = 1, work%logit%p
-               posn = posn + 1
-               work%logit%beta_new(posn) = beta(j,k)
+         if( work%logit%model_type == "saturated" ) then
+            do cov_patt = 1, work%logit%n_cov_patt
+               if( ( work%logit%prior == "none" ) .and. &
+                    work%logit%cov_patt_empty( cov_patt ) ) then
+                  work%logit%pimat_new(cov_patt,:) = mvcode_local
+               else
+                  sum = 0.D0
+                  mvfound = .false.
+                  do k = 1, work%logit%r
+                     if( pimat(cov_patt,k) == mvcode_local ) then
+                        mvfound = .true.
+                        exit
+                     end if
+                     if( pimat(cov_patt,k) < 0.D0 ) goto 403
+                     if( pimat(cov_patt,k) > 1.D0 ) goto 403
+                     sum = sum + pimat(cov_patt,k)
+                  end do
+                  if( mvfound ) then
+                     if( .not. for_prediction_local ) goto 404
+                     work%logit%pimat_new(cov_patt,:) = mvcode_local 
+                  else
+                     do k = 1, work%logit%r
+                        work%logit%pimat_new(cov_patt,k) = &
+                             pimat(cov_patt,k) / sum
+                     end do
+                  end if
+               end if
             end do
-         end do
+         else
+            k = work%logit%baseline
+            do j = 1, work%logit%p
+               if( beta(j,k) /= 0.D0 ) goto 410
+            end do
+            posn = 0
+            do k = 1, work%logit%r
+               if( k == work%logit%baseline ) cycle
+               do j = 1, work%logit%p
+                  posn = posn + 1
+                  work%logit%beta_new(posn) = beta(j,k)
+               end do
+            end do
+         end if
       else
          goto 400
       end if
@@ -9697,14 +10167,35 @@ module cvam_engine
            work%logit%wkdB( work%logit%d ), &
            work%logit%wkddA( work%logit%d, work%logit%d ), &
            work%logit%wkddB( work%logit%d, work%logit%d ), &
+           work%logit%wkrdA( work%logit%r, work%logit%d ), &
            stat = status )
       if( status /= 0 ) goto 100
+      !
+      if( work%logit%model_type == "saturated" ) then
+         allocate( &
+              work%logit%iter_em_saturated( work%logit%n_cov_patt ), &
+              work%logit%converged_em_saturated( work%logit%n_cov_patt ), &
+              work%logit%pi_saturated( work%logit%r ), &
+              work%logit%pi_saturated_new( work%logit%r ), &
+           stat = status )
+         work%logit%iter_em_saturated(:) = 0
+         work%logit%converged_em_saturated(:) = .false.
+         work%logit%pi_saturated(:) = 0.D0
+         work%logit%pi_saturated_new(:) = 0.D0
+         if( status /= 0 ) goto 100
+      end if
       ! normal exit
       answer = RETURN_SUCCESS
       goto 999
       ! error traps
 50    call err_handle(err, 1, &
            comment = "This is not a logit model" )
+      goto 800
+55    call err_handle(err, 1, &
+           comment = "Value of model_type_int not recognized" )
+      goto 800
+80    call err_handle(err, 1, &
+            comment = "Model_type not recognized" )
       goto 800
 100   call err_handle(err, 1, &
            comment = "Unable to allocate workspace array component" )
@@ -9754,6 +10245,15 @@ module cvam_engine
 206   call err_handle(err, 1, &
            comment = "Element of cov_patt_for_data_patt out of range" )
       goto 800
+207   call err_handle(err, 1, &
+           comment = "Array reverse_patt has incorrect size" )
+      goto 800
+208   call err_handle(err, 1, &
+           comment = "Element of reverse_patt(:,1) out of range" )
+      goto 800
+209   call err_handle(err, 1, &
+           comment = "Element of reverse_patt(:,2) out of range" )
+      goto 800
 210   call err_handle(err, 1, &
            comment = "Element of ystar out of range" )
       goto 800
@@ -9770,7 +10270,7 @@ module cvam_engine
            comment = "Negative value for iter_max_em_null" )
       goto 800
 330   call err_handle(err, 1, &
-           comment = "Negative value for prior_freq_tot_DAP" )
+           comment = "Non-positive value for prior_freq_tot_DAP" )
       goto 800
 340   call err_handle(err, 1, &
            comment = "Non-positive value for crit_em" )
@@ -9784,17 +10284,415 @@ module cvam_engine
 351   call err_handle(err, 1, &
            comment = "Negative value for iter_max_nr" )
       goto 800
+352   call err_handle(err, 1, &
+           comment = "Non-positive value for crit_boundary" )
+      goto 800
 400   call err_handle(err, 1, &
            comment = "Value of start_val_use_int not recognized" )
       goto 800
+402   call err_handle(err, 1, &
+           comment = "Array pimat has incorrect size" )
+      call err_handle(err, 1, &
+           comment = "User-supplied starting values cannot be used" )
+      goto 800
+403   call err_handle(err, 1, &
+           comment = "Element of pimat out of range" )
+      call err_handle(err, 1, &
+           comment = "User-supplied starting values cannot be used" )
+      goto 800
+404   call err_handle(err, 1, &
+           comment = "Array pimat contains missing values" )
+      call err_handle(err, 1, &
+           comment = "User-supplied starting values cannot be used" )
+      goto 800
+405   call err_handle(err, 1, &
+           comment = "Array beta has incorrect size" )
+      call err_handle(err, 1, &
+           comment = "User-supplied starting values cannot be used" )
+      goto 800
 410   call err_handle(err, 1, &
-           comment = "Starting value in beta does not satisfy constraint" )
+           comment = "Elements of beta do not satisfy baseline constraint" )
+      call err_handle(err, 1, &
+           comment = "User-supplied starting values cannot be used" )
       goto 800
 800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
       goto 999
       ! cleanup
 999   continue
     end function setup_logit_workspace
+    !##################################################################
+   integer(kind=our_int) function put_survey_objects_into_basic_workspace( &
+        survey_mode_int, n_strat, n_clus, design_int, weight, &
+        work, err ) result(answer)
+      implicit none
+      ! declare inputs
+      integer(kind=our_int), intent(in) :: survey_mode_int
+      integer(kind=our_int), intent(in) :: n_strat
+      integer(kind=our_int), intent(in) :: n_clus(:)
+      integer(kind=our_int), intent(in) :: design_int(:,:)
+      real(kind=our_dble), intent(in) :: weight(:)
+      ! declare workspaces
+      type(workspace_type_cvam_basic), intent(inout) :: work
+      type(error_type), intent(inout) :: err
+      ! declare locals
+      integer(our_int) :: s, c, i, status
+      real(kind=our_dble) :: rtmp
+      character(len=*), parameter :: &
+           subname = "put_survey_objects_into_basic_workspace"
+      ! begin
+      answer = RETURN_FAIL
+      if( survey_mode_int == 0 ) then
+         work%survey_mode = .false.
+      else
+         work%survey_mode = .true.
+      end if
+      !
+      if( work%survey_mode ) then
+         if( n_strat <= 0 ) goto 200
+         work%n_strat = n_strat
+         if( size( n_clus ) /= work%n_strat ) goto 210
+         allocate( work%n_clus( work%n_strat ), stat=status )
+         if( status /= 0 ) goto 100
+         work%n_clus_tot = 0
+         do s = 1, work%n_strat
+            if( n_clus(s) <= 0 ) goto 220
+            work%n_clus(s) = n_clus(s)
+            work%n_clus_tot = work%n_clus_tot + work%n_clus(s)
+         end do
+         if( size( design_int, 1 ) /= work%nrow_data ) goto 230
+         if( size( design_int, 2 ) /= 3 ) goto 230
+         if( size( weight ) /= work%nrow_data ) goto 260
+         allocate( work%stratum( work%nrow_data ), &
+              work%cluster( work%nrow_data ), &
+              work%subpop( work%nrow_data ),  &
+              work%weight( work%nrow_data ),  &
+              work%scaled_weight( work%nrow_data ),  &
+              stat=status )
+         if( status /= 0 ) goto 100
+         work%n_subpop = 0
+         work%total_weight_subpop = 0.D0
+         do i = 1, work%nrow_data
+            s = design_int(i,1)
+            if( ( s < 0 ) .or. ( s > work%n_strat ) ) goto 240
+            work%stratum(i) = s
+            c = design_int(i,2)
+            if( ( c < 0 ) .or. ( c > work%n_clus_tot ) ) goto 250
+            work%cluster(i) = c
+            if( weight(i) < 0.D0 ) goto 270
+            work%weight(i) = weight(i)
+            if( design_int(i,3) == 0 ) then
+               work%subpop(i) = .false.
+            else
+               work%subpop(i) = .true.
+               work%n_subpop = work%n_subpop + 1
+               work%total_weight_subpop = work%total_weight_subpop &
+                    + work%weight(i)
+            end if
+         end do
+         if( work%total_weight_subpop <= 0.D0 ) goto 280
+         if( work%n_subpop <= 0 ) goto 290
+         rtmp = real( work%n_subpop, our_dble ) / work%total_weight_subpop
+         do i = 1, work%nrow_data
+            if( work%subpop(i) ) then
+               work%scaled_weight(i) = rtmp * work%weight(i)
+            else
+               work%scaled_weight(i) = 0.D0
+            end if
+         end do
+         allocate( work%stratum_for_cluster( work%n_clus_tot ), &
+              stat=status )
+         if( status /= 0 ) goto 100
+         work%stratum_for_cluster(:) = 0
+         do i = 1, work%nrow_data
+            s = work%stratum(i)
+            c = work%cluster(i)
+            if( work%stratum_for_cluster(c) == 0 ) then
+               work%stratum_for_cluster(c) = s
+            else
+               if( work%stratum_for_cluster(c) /= s ) goto 300
+            end if
+         end do
+         !
+      end if
+      ! normal exit
+      answer = RETURN_SUCCESS
+      goto 999
+      ! error traps
+100   call err_handle(err, 1, &
+            comment = "Unable to allocate workspace array component" )
+      goto 800
+200   call err_handle(err, 1, &
+            comment = "Non-positive value for n_strat" )
+      goto 800
+210   call err_handle(err, 1, &
+            comment = "Argument n_clus has incorrect size" )
+      goto 800
+220   call err_handle(err, 1, &
+            comment = "Element of n_clus is non-positive" )
+      goto 800
+230   call err_handle(err, 1, &
+            comment = "Argument design_int has incorrect shape" )
+      goto 800
+240   call err_handle(err, 1, &
+            comment = "Stratum indicator out of range" )
+      goto 800
+      call err_handle(err, 3, iobs=i)
+250   call err_handle(err, 1, &
+            comment = "Cluster indicator out of range" )
+      call err_handle(err, 3, iobs=i)
+      goto 800
+260   call err_handle(err, 1, &
+            comment = "Argument weight has incorrect size" )
+      goto 800
+270   call err_handle(err, 1, &
+            comment = "Negative survey weight encountered" )
+      call err_handle(err, 3, iobs=i)
+      goto 800
+280   call err_handle(err, 1, &
+            comment = "Total weight in sub-population is not positive" )
+      goto 800
+290   call err_handle(err, 1, &
+            comment = "Sub-population has no observations" )
+      goto 800
+300   call err_handle(err, 1, &
+            comment = "Stratum indicators not identical within clusters;" )
+      call err_handle(err, 1, &
+            comment = "consider using nested = TRUE" )
+      goto 800
+800   call err_handle(err, 2, whichsub = subname, whichmod = modname )
+      goto 999
+      ! cleanup
+999   continue
+    end function put_survey_objects_into_basic_workspace
+    !##################################################################
+    integer(kind=our_int) function apply_survey_weight_logit( &
+         scaled_weight_data_patt, subpop_int_data_patt, &
+         work, logit, err ) result(answer)
+       ! defines the frequencies that are used in model fitting
+       !   logit%freq_data_patt(:) (real)
+       !      * non-survey mode: summed frequencies within data patterns,
+       !        including those that correspond to missing responses
+       !      * survey mode: summed scaled weights within data patterns,
+       !        including those that correspond to missing responses
+       !        (scaled weight sums to sample size within the subpop,
+       !        and is set to zero outside the subpop)
+       !    logit%freq_int_data_patt(:) (integer)
+       !     (These are not directly used in model fitting)
+       !      * non-survey mode: summed frequencies within data patterns,
+       !        including those that correspond to missing responses
+       !        stored as integers
+       !      * survey mode: summed frequencies within data patterns,
+       !        stored as integers.
+       !    logit%subpop_int_data_patt(:) (integer)
+       !      * non-survey mode: not allocated
+       !      * survey mode: summed frequencies in subpopulation
+       !        within data patterns
+       ! Also recomputes
+       !      * cov_patt_all_zero
+       !      * n_cov_patt_all_zero
+       !      * cov_patt_empty
+       !      * n_cov_patt_empty
+       !      * n_param_estimated
+       !      * degrees_of_freedom
+       implicit none
+       ! inputs
+       real(kind=our_dble), intent(in) :: scaled_weight_data_patt(:)
+       integer(kind=our_int), intent(in) :: subpop_int_data_patt(:)
+       ! declare workspaces
+       type(workspace_type_cvam_basic), intent(inout) :: work
+       type(workspace_type_cvam_logit), intent(inout) :: logit
+       type(error_type), intent(inout) :: err
+       ! declare locals
+       integer(kind=our_int) :: patt, cov_patt, data_patt, status
+       real(kind=our_dble) :: sum, rtmp
+       real(kind=our_dble), parameter :: tol = 1.D-06
+       character(len=*), parameter :: &
+            subname = "apply_survey_weight_logit"
+       ! begin
+       answer = RETURN_FAIL
+       !#####
+       if( work%survey_mode ) then
+          if( size( scaled_weight_data_patt ) /= logit%n_data_patt ) &
+               goto 110
+          if( size( subpop_int_data_patt ) /= logit%n_data_patt ) &
+               goto 120
+          allocate( logit%subpop_int_data_patt( logit%n_data_patt ), &
+               stat = status )
+          if( status /= 0 ) goto 100
+          sum = 0.D0
+          do patt = 1, logit%n_data_patt
+             if( subpop_int_data_patt( patt ) < 0 ) goto 125
+             if( subpop_int_data_patt( patt ) > &
+                  logit%freq_int_data_patt( patt ) ) goto 130
+             if( ( subpop_int_data_patt( patt ) == 0 ) .and. &
+                  ( scaled_weight_data_patt( patt ) /= 0.D0 ) ) goto 140
+             if( ( subpop_int_data_patt( patt ) /= 0 ) .and. &
+                  ( scaled_weight_data_patt( patt ) == 0.D0 ) ) goto 140
+             logit%subpop_int_data_patt( patt ) = subpop_int_data_patt( patt )
+             sum = sum + scaled_weight_data_patt(patt)
+          end do
+          rtmp = real( work%n_subpop, our_dble )
+          if( abs( sum - rtmp ) > tol ) goto 150
+          logit%freq_data_patt(:) = scaled_weight_data_patt(:)
+          !
+          logit%cov_patt_all_zero(:) = .true.
+          logit%n_cov_patt_all_zero = 0
+          logit%cov_patt_empty(:) = .true.
+          logit%n_cov_patt_empty = 0
+          do cov_patt = 1, logit%n_cov_patt
+             do data_patt = logit%data_patt_st( cov_patt ), &
+                  logit%data_patt_fin( cov_patt )
+                if( logit%freq_data_patt( data_patt ) /= 0.D0 ) then
+                   logit%cov_patt_all_zero( cov_patt ) = .false.
+                   exit
+                end if
+             end do
+             if( logit%cov_patt_all_zero( cov_patt ) ) then
+                logit%n_cov_patt_all_zero = logit%n_cov_patt_all_zero + 1
+             end if
+             logit%cov_patt_empty( cov_patt ) = &
+                  logit%cov_patt_all_missing( cov_patt ) .or. &
+                  logit%cov_patt_all_zero( cov_patt )
+             if( logit%cov_patt_empty( cov_patt ) ) then
+                logit%n_cov_patt_empty = logit%n_cov_patt_empty + 1
+             end if
+          end do
+          !
+          if( work%logit%model_type == "saturated" ) then
+             if( work%logit%prior == "none" ) then
+                work%logit%n_param_estimated = ( work%logit%n_cov_patt - &
+                     work%logit%n_cov_patt_empty ) * &
+                     ( work%logit%r - 1 )
+             else if( work%logit%prior == "DAP" ) then
+                work%logit%n_param_estimated = work%logit%n_cov_patt * &
+                     ( work%logit%r - 1 )
+             else 
+                goto 250
+             end if
+             work%logit%degrees_of_freedom = 0
+          else if( work%logit%model_type == "non-saturated" ) then
+             work%logit%n_param_estimated = work%logit%d
+             if( work%logit%prior == "none" ) then
+                work%logit%degrees_of_freedom = ( work%logit%n_cov_patt - &
+                     work%logit%n_cov_patt_empty ) * &
+                     ( work%logit%r - 1 ) - work%logit%n_param_estimated
+             else if( work%logit%prior == "DAP" ) then
+                work%logit%n_param_estimated = work%logit%n_cov_patt * &
+                     ( work%logit%r - 1 ) - work%logit%n_param_estimated
+             else 
+                goto 250
+             end if
+          else
+             goto 80
+          end if
+       end if
+       ! normal exit
+       answer = RETURN_SUCCESS
+       goto 999
+       ! error traps
+80     call err_handle(err, 1, &
+            comment = "Model_type not recognized" )
+       goto 800
+100    call err_handle(err, 1, &
+            comment = "Unable to allocate workspace array component" )
+       goto 800
+110    call err_handle(err, 1, &
+            comment = "Array scaled_weight_data_patt has incorrect size" )
+       goto 800
+120    call err_handle(err, 1, &
+            comment = "Array subpop_int_data_patt has incorrect size" )
+       goto 800
+125    call err_handle(err, 1, &
+            comment = "Element of subpop_int_data_patt is negative" )
+       goto 800
+130    call err_handle(err, 1, &
+            comment = "subpop_int_data_patt exceeds freq_int_data_patt" )
+       goto 800
+140    call err_handle(err, 1, &
+            comment = "subpop_int_data_patt incompatible with scaled weight" )
+       goto 800
+150    call err_handle(err, 1, &
+            comment = "Values in scaled_weight_data_patt appear incorrect" )
+       goto 800
+250    call err_handle(err, 1, &
+            comment = "Value of prior not recognized" )
+       goto 800
+800    call err_handle(err, 2, whichsub = subname, whichmod = modname )
+       goto 999
+       ! cleanup
+999    continue
+    end function apply_survey_weight_logit
+    !##################################################################
+    integer(kind=our_int) function &
+         create_data_and_prior_use_objects_logit( work, logit, &
+         err ) result(answer)
+       ! Computes summaries related to sample sizes in survey and
+       ! non-survey mode
+       !   logit%total_freq_supplied_int
+       !     * non-survey mode: total frequency in supplied data
+       !     * survey mode: total frequency in supplied data within
+       !       subpopulation
+       !   logit%total_freq_subpop_int
+       !     * non-survey mode: equal to zero
+       !     * survey mode: total frequency in supplied data within
+       !       subpopulation
+       !   logit%total_freq_use_data_int
+       !     * non-survey mode: total frequency in supplied data,
+       !       excluding responses that are completely missing
+       !     * survey mode: total frequency in supplied data within
+       !       subpopulation, excluding responses that are completely
+       !       missing
+       !   logit%total_freq_use_prior
+       !     * total prior counts added by DAP (real)
+       implicit none
+       ! declare workspaces
+       type(workspace_type_cvam_basic), intent(inout) :: work
+       type(workspace_type_cvam_logit), intent(inout) :: logit
+       type(error_type), intent(inout) :: err
+       ! declare locals
+       integer(kind=our_int) :: isum, patt, i, ystar, ycol, mvcode
+       character(len=*), parameter :: &
+            subname = "create_data_and_prior_use_objects_logit"
+       ! begin
+       answer = RETURN_FAIL
+       !#####
+       ycol = logit%ycol
+       mvcode = work%mvcode( ycol )
+       !#####
+       if( work%survey_mode ) then
+          isum = 0
+          do i = 1, work%nrow_data
+             if( .not. work%subpop(i) ) cycle
+             ystar = work%ystar(i, ycol)
+             if( ystar == mvcode ) cycle
+             isum = isum + 1
+          end do
+          logit%total_freq_supplied_int = work%data_freq_tot
+          logit%total_freq_subpop_int = work%n_subpop
+          logit%total_freq_use_data_int = isum
+       else
+          isum = 0
+          do patt = 1, logit%n_data_patt
+             i = logit%row_posn_data_patt( patt )
+             ystar = work%ystar(i, ycol )
+             if( ystar == mvcode ) cycle
+             isum = isum + logit%freq_int_data_patt(patt)          
+          end do
+          logit%total_freq_supplied_int = work%data_freq_tot
+          logit%total_freq_subpop_int = 0
+          logit%total_freq_use_data_int = isum
+       end if
+       !
+       logit%total_freq_use_prior = logit%prior_freq_tot_DAP
+       ! normal exit
+       answer = RETURN_SUCCESS
+       goto 999
+       ! error traps
+800    call err_handle(err, 2, whichsub = subname, whichmod = modname )
+       goto 999
+       ! cleanup
+999    continue
+     end function create_data_and_prior_use_objects_logit
     !##################################################################
     integer(kind=our_int) function run_logit_em_null( work, logit, &
          err ) result(answer)
@@ -9808,6 +10706,7 @@ module cvam_engine
        integer(kind=our_int) :: ycol, nlev_ystar, mvcode, &
             ystar, size_mapset, j, k
        real(kind=our_dble) :: rtmp, sum
+       logical :: boundary
        character(len=*), parameter :: &
             subname = "run_logit_em_null"
        ! begin
@@ -9862,6 +10761,22 @@ module cvam_engine
              end if
           end do
        end do
+       ! check boundary
+       if( logit%converged_em_null ) then
+          logit%pinull(:) = logit%pinull_new(:)
+          boundary = .false.
+          do k = 1, logit%r
+             if( logit%pinull(k) <= logit%crit_boundary ) then
+                boundary = .true.
+                exit
+             end if
+          end do
+          if( boundary ) then
+             call err_handle(err, 1, &
+                  comment = "Estimate at or near boundary" )
+             call err_handle(err, 2, whichsub = subname, whichmod = modname )
+          end if
+       end if
        !###
        ! normal exit
        answer = RETURN_SUCCESS
@@ -9884,23 +10799,30 @@ module cvam_engine
     !##################################################################
     integer(kind=our_int) function run_logit_em( work, logit, &
          err ) result(answer)
+       ! Assumes that the starting value for beta is in logit%beta_new
+       ! The resulting estimate is put into logit%beta 
        implicit none
        ! declare workspaces
        type(workspace_type_cvam_basic), intent(inout) :: work
        type(workspace_type_cvam_logit), intent(inout) :: logit
        type(error_type), intent(inout) :: err
        ! declare locals
-       integer(kind=our_int) :: ycol, nlev_ystar, mvcode, j, k
+       integer(kind=our_int) :: ycol, nlev_ystar, mvcode, i, j, k
        real(kind=our_dble) :: sum
-       logical :: aborted, aborted_nr, failed
+       logical :: aborted, aborted_nr, failed, boundary
        character(len=*), parameter :: &
             subname = "run_logit_em"
        ! begin
        answer = RETURN_FAIL
        !
+       if( logit%model_type == "saturated" ) goto 100
+       logit%aborted = .false.
+       logit%var_est_failed = .false.
+       logit%boundary = .false.
        ycol = logit%ycol  ! column of work%ystar
        nlev_ystar = work%n_levels(ycol)
        mvcode = work%mvcode(ycol)
+       logit%pimat_new(:,:) = 0.D0
        logit%iter_em = 0
        logit%converged_em = .false.
        aborted = .false.
@@ -9911,15 +10833,21 @@ module cvam_engine
           logit%iter_em = logit%iter_em + 1
           logit%beta(:) = logit%beta_new(:)
           ! do the E-step
-          if( compute_pimat_logit( work, logit, err ) &
-               == RETURN_FAIL ) exit
-          if(  compute_freq_data_patt_expected_logit( work, logit, &
+          if( logit%iter_em == 1 ) then
+             if( compute_pimat_logit( work, logit, err ) &
+                  == RETURN_FAIL ) exit
+          else
+             logit%pimat(:,:) = logit%pimat_new(:,:)
+          end if
+          if( compute_freq_data_patt_expected_logit( work, logit, &
                .true., err ) == RETURN_FAIL ) exit
           logit%loglik_vec( logit%iter_em ) = logit%loglik
           logit%logP_vec( logit%iter_em ) = logit%loglik + logit%logprior
           ! do the M-step
           logit%beta_tmp(:) = logit%beta(:)  ! to restore later
           logit%beta_nr_new(:) = logit%beta(:)
+          logit%pimat_tmp(:,:) = logit%pimat(:,:) ! to restore later
+          logit%pimat_nr_new(:,:) = logit%pimat(:,:)
           logit%iter_nr = 0
           logit%converged_nr = .false.
           aborted_nr = .false.
@@ -9929,10 +10857,7 @@ module cvam_engine
              aborted_nr = .true.
              logit%iter_nr = logit%iter_nr + 1
              logit%beta(:) = logit%beta_nr_new(:)
-             if( logit%iter_nr > 1 ) then
-                if( compute_pimat_logit( work, logit, err ) &
-                     == RETURN_FAIL ) exit
-             end if
+             logit%pimat_nr(:,:) = logit%pimat_nr_new(:,:)
              if( compute_logp_A_score_hess_logit( work, logit, err ) &
                   == RETURN_FAIL ) exit
              ! put negative hessian into wkddA and inverse into wkddB
@@ -9950,11 +10875,18 @@ module cvam_engine
                 logit%wkdA(j) = logit%beta(j) + sum
              end do
              logit%beta_nr_new(:) = logit%wkdA(:)
-             ! detect convergence
+             ! update pimat
+             logit%beta(:) = logit%beta_nr_new(:)
+             if( compute_pimat_logit( work, logit, err ) &
+                  == RETURN_FAIL ) exit
+             logit%pimat_nr_new(:,:) = logit%pimat(:,:)
+             ! detect convergence by comparing pimat_nr_new to pimat_nr
              logit%max_diff_nr = 0.D0
-             do j = 1, logit%d
-                logit%max_diff_nr = max( logit%max_diff_nr, &
-                     abs( logit%beta_nr_new(j) - logit%beta(j) ) )
+             do i = 1, logit%n_cov_patt
+                do j = 1, logit%r
+                   logit%max_diff_nr = max( logit%max_diff_nr, &
+                        abs( logit%pimat_nr_new(i,j) - logit%pimat_nr(i,j) ) )
+                end do
              end do
              if( logit%max_diff_nr <= logit%crit_nr ) then
                 logit%converged_nr = .true.
@@ -9963,6 +10895,7 @@ module cvam_engine
           end do
           !
           logit%beta(:) = logit%beta_tmp(:)
+          logit%pimat(:,:) = logit%pimat_tmp(:,:)
           if( aborted_nr) then
              call err_handle(err, 1, &
                   comment = "NR algorithm aborted" )
@@ -9970,25 +10903,54 @@ module cvam_engine
              exit
           end if
           logit%beta_new(:) = logit%beta_nr_new(:)
+          logit%pimat_new(:,:) = logit%pimat_nr_new(:,:)
           ! assess convergence
           logit%max_diff_em = 0.D0
-          do k = 1, logit%d
-             logit%max_diff_em = max( logit%max_diff_em, &
-                  abs( logit%beta_new(k) - logit%beta(k) ) )
+          do i = 1, logit%n_cov_patt
+             do j = 1, logit%r
+                logit%max_diff_em = max( logit%max_diff_em, &
+                     abs( logit%pimat_new(i,j) - logit%pimat(i,j) ) )
+             end do
           end do
           if( logit%max_diff_em <= logit%crit_em ) logit%converged_em = .true.
           aborted = .false.
        end do
        !
+       logit%aborted = aborted
        if( aborted ) then
           call err_handle(err, 1, &
                comment = "EM algorithm aborted" )
           call err_handle(err, 5, iiter = logit%iter_em )
           logit%beta_new(:) = logit%beta(:)
+          call err_handle(err, 1, &
+               comment = "Estimated cov. matrix for beta not available" )
+          logit%var_est_failed = .true.
+          logit%score(:) = 0.D0
           logit%vhat_beta(:,:) = 0.D0
+          if( compute_pimat_logit( work, logit, err ) &
+               == RETURN_FAIL ) goto 800
        else
-          ! obtain vhat_beta
+          ! boundary check
+          boundary = .false.
+          do i = 1, logit%n_cov_patt
+             do j = 1, logit%r
+                if( logit%pimat_new(i,j) <= logit%crit_boundary ) then
+                   boundary = .true.
+                   exit
+                end if
+             end do
+             if( boundary ) exit
+          end do
+          logit%boundary = boundary
+          if( boundary ) then
+             call err_handle(err, 1, &
+                  comment = "Estimate at or near boundary" )
+             if( .not. failed ) call err_handle(err, 1, &
+                  comment = "Estimated variances may be unreliable" )
+          end if
+          ! put estimate into logit%beta
           logit%beta(:) = logit%beta_new(:)
+          ! obtain vhat_beta
           failed = .false.
           if( compute_pimat_logit( work, logit, err ) &
                == RETURN_FAIL ) goto 800
@@ -10008,6 +10970,7 @@ module cvam_engine
                   logit%vhat_beta, err ) == RETURN_FAIL ) failed = .true.
           end if
           if( failed ) then
+             logit%var_est_failed = .true.
              call err_handle(err, 1, &
                   comment = "logP is not concave" )
              call err_handle(err, 1, &
@@ -10020,6 +10983,9 @@ module cvam_engine
        answer = RETURN_SUCCESS
        goto 999
        ! error traps
+100    call err_handle(err, 1, &
+           comment = "Model is saturated, this function cannot be used" )
+       goto 800
 800    call err_handle(err, 2, whichsub = subname, whichmod = modname )
        goto 999
        ! cleanup
@@ -10027,23 +10993,61 @@ module cvam_engine
      end function run_logit_em
      !##################################################################
      integer(kind=our_int) function compute_pimat_logit( work, logit, &
-         err ) result(answer)
+         err, logit_scale, mvcode ) result(answer)
        ! computes pi matrix from beta vector in logit workspace
+       ! If logit_scale is .true., computes logits rather than probs
+       ! If mvcode is supplied, then any predictor equal to mvcode
+       ! will set the corresponding row of pimat to mvcode 
        implicit none
        ! declare workspaces
        type(workspace_type_cvam_basic), intent(inout) :: work
        type(workspace_type_cvam_logit), intent(inout) :: logit
        type(error_type), intent(inout) :: err
+       ! optionals
+       logical, intent(in), optional :: logit_scale
+       real(kind=our_dble), intent(in), optional :: mvcode
        ! declare locals
        integer(kind=our_int) :: i, j, posn, k,  patt
-       real(kind=our_dble) :: sum, eta_max
+       real(kind=our_dble) :: sum, eta_max, mvcode_local
+       logical :: logit_scale_local, mvcode_supplied, mv_present
        character(len=*), parameter :: &
             subname = "compute_pimat_logit"
        ! begin
        answer = RETURN_FAIL
        !####
+       if( present( logit_scale ) ) then
+          logit_scale_local = logit_scale
+       else
+          logit_scale_local = .false.
+       end if
+       if( present( mvcode ) ) then
+          mvcode_supplied = .true.
+          mvcode_local = mvcode
+       else
+          mvcode_supplied = .false.
+          mvcode_local = 0.D0   ! this won't be needed
+       end if
        do patt = 1, logit%n_cov_patt
+          ! compute linear predictors
           i = logit%row_posn_cov_patt(patt)
+          if( i == 0 ) goto 50
+          if( mvcode_supplied ) then
+             ! check for missing values among predictors
+             mv_present = .false.
+             do k = 1, logit%p
+                if( work%pred(i, logit%xcol(k)) == mvcode_local ) then
+                   mv_present = .true.
+                   exit
+                end if
+             end do
+             if( mv_present ) then
+                do j = 1, logit%r
+                   logit%pimat(patt,j) = mvcode_local
+                end do
+                cycle
+             end if
+          end if
+          !
           posn = 0
           do j = 1, logit%r
              if( j == logit%baseline ) then
@@ -10058,6 +11062,13 @@ module cvam_engine
              end do
              logit%wkrA(j) = sum
           end do
+          if( logit_scale_local ) then
+             do j = 1, logit%r
+                logit%pimat(patt,j) = logit%wkrA(j)
+             end do
+             cycle
+          end if
+          ! exponentiate and normalize
           eta_max = log_tiny
           do j = 1, logit%r
              eta_max = max(eta_max, logit%wkrA(j))
@@ -10083,6 +11094,9 @@ module cvam_engine
        answer = RETURN_SUCCESS
        goto 999
        ! error traps
+50     call err_handle(err, 1, &
+            comment = "Cov pattern not found in supplied dataset" )
+       goto 800
 100    call err_handle(err, 1, &
             comment = "Overflow; fitted value became too large" )
        call err_handle(err, 3, iobs=i)
@@ -10140,10 +11154,10 @@ module cvam_engine
           i = logit%row_posn_data_patt( patt )
           cov_patt = logit%cov_patt_for_data_patt( patt )
           ystar = work%ystar(i, ycol )
-          if( omit_missing .and. ( ystar == mvcode ) ) then
-             logit%freq_data_patt_expected(patt,:) = 0.D0
-             cycle
-          end if
+          logit%freq_data_patt_expected(patt,:) = 0.D0
+          if( omit_missing .and. ( ystar == mvcode ) ) cycle
+          rtmp = logit%freq_data_patt(patt)
+          if( rtmp == 0.D0 ) cycle
           sum = 0.D0
           size_mapset = size( work%mapping%vec(ycol)%vec(ystar)%vec )
           do j = 1, size_mapset
@@ -10151,11 +11165,8 @@ module cvam_engine
              if( logit%pimat(cov_patt,y) < 0.D0 ) goto 150
              sum = sum + logit%pimat(cov_patt,y)
           end do
-          rtmp = logit%freq_data_patt(patt)
-          if( rtmp > 0.D0 ) then
-             if( sum <= 0.D0 ) goto 200
-             logit%loglik = logit%loglik + rtmp * log(sum)
-          end if
+          if( sum <= 0.D0 ) goto 200
+          logit%loglik = logit%loglik + rtmp * log(sum)
           do j = 1, size_mapset
              y = work%mapping%vec(ycol)%vec(ystar)%vec(j)
              logit%freq_data_patt_expected(patt,y) = &
@@ -10630,7 +11641,580 @@ module cvam_engine
 999    continue
      end function compute_logp_score_hess_logit
      !##################################################################
-    integer(kind=our_int) function run_cvam_lcmeas( &
+     integer(kind=our_int) function get_pimat_big_logit( work, logit, &
+          pimat_big, err, mvcode ) result(answer)
+       ! fills pimat_big with current predicted probabilities
+       implicit none
+       ! declare workspaces
+       type(workspace_type_cvam_basic), intent(inout) :: work
+       type(workspace_type_cvam_logit), intent(inout) :: logit
+       real(kind=our_dble), intent(out) :: pimat_big(:,:)
+       type(error_type), intent(inout) :: err
+       real(kind=our_dble), intent(in), optional :: mvcode
+       ! declare locals
+       integer(kind=our_int) :: i, j, patt
+       real(kind=our_dble) :: mvcode_local
+       logical :: mvcode_supplied
+       character(len=*), parameter :: &
+            subname = "get_pimat_big_logit"
+       ! begin
+       answer = RETURN_FAIL
+       !####
+       if( present(mvcode) ) then
+          mvcode_supplied = .true.
+          mvcode_local = mvcode
+       else
+          mvcode_supplied = .false.
+          mvcode_local = 0.D0
+       end if
+       do i = 1, logit%n
+          patt = logit%reverse_cov_patt(i)
+          if( ( patt < 0 ) .or. ( patt > logit%n_cov_patt ) ) goto 100
+          if( patt == 0 ) then
+             if( .not. mvcode_supplied ) goto 50
+             do j = 1, logit%r
+                pimat_big(i,j) = mvcode_local
+             end do
+             cycle
+          end if
+          do j = 1, logit%r
+             pimat_big(i,j) = logit%pimat(patt,j)
+          end do
+       end do
+       ! normal exit
+       answer = RETURN_SUCCESS
+       goto 999
+       ! error traps
+50     call err_handle(err, 1, &
+            comment = "Pattern zero encountered, but no mvcode supplied" )
+       goto 800
+100    call err_handle(err, 1, &
+            comment = "Element of reverse_cov_patt out of range" )
+       goto 800
+800    call err_handle(err, 2, whichsub = subname, whichmod = modname )
+       goto 999
+       ! cleanup
+999    continue
+     end function get_pimat_big_logit
+     !##################################################################
+     integer(kind=our_int) function run_logit_em_saturated( work, logit, &
+         err ) result(answer)
+       ! Assumes starting value is in logit%pimat_new(:,:)
+       ! Puts estimate into logit%pimat(:,:)
+       ! When prior = "none", rows of logit%pimat(:,:) corresponding to
+       ! empty covariate patterns are filled with -1.D0
+       implicit none
+       ! declare workspaces
+       type(workspace_type_cvam_basic), intent(inout) :: work
+       type(workspace_type_cvam_logit), intent(inout) :: logit
+       type(error_type), intent(inout) :: err
+       ! declare locals
+       integer(kind=our_int) :: cov_patt, ycol, ystar, y, &
+            st, fin, patt, i, mvcode, size_mapset, j
+       real(kind=our_dble) :: sum, rtmp, max_diff
+       logical :: aborted, boundary
+       character(len=*), parameter :: &
+            subname = "run_logit_em_saturated"
+       ! begin
+       answer = RETURN_FAIL
+       !
+       if( logit%model_type /= "saturated" ) goto 100
+       logit%aborted = .false.
+       logit%var_est_failed = .false. ! not relevant here
+       logit%boundary = .false.
+       !
+       if( ( logit%prior == "none" ) .and. ( logit%n_cov_patt_empty > 0 ) ) &
+            call err_handle(err, 1, &
+            comment = "Empty covariate patterns were omitted from model fit" )
+       !
+       ycol = logit%ycol  ! column of work%ystar
+       mvcode = work%mvcode(ycol)
+       logit%pimat(:,:) = -1.D0
+       logit%max_diff_em = 0.D0
+       logit%iter_em = 0
+       logit%converged_em = .false.
+       do cov_patt = 1, logit%n_cov_patt
+          aborted = .false.
+          logit%iter_em_saturated( cov_patt ) = 0
+          logit%converged_em_saturated( cov_patt ) = .false.
+          if( logit%cov_patt_empty( cov_patt ) .and. &
+               ( logit%prior == "none" ) ) then
+             logit%converged_em_saturated( cov_patt ) = .true.
+             cycle
+          end if
+          logit%pi_saturated_new(:) = work%logit%pimat_new( cov_patt, : )
+          do
+             if( logit%iter_em_saturated( cov_patt ) >= &
+                  logit%iter_max_em_null ) exit
+             if( logit%converged_em_saturated( cov_patt ) ) exit
+             aborted = .true.   ! set to .false. at end of iteration
+             logit%iter_em_saturated( cov_patt ) = &
+                  logit%iter_em_saturated( cov_patt ) + 1
+             logit%pi_saturated(:) = logit%pi_saturated_new(:)
+             ! do the E-step
+             if( logit%prior == "DAP" ) then
+                logit%freq_cov_patt_expected(:) = logit%prior_freq_cov_patt(:)
+             else
+                logit%freq_cov_patt_expected(:) = 0.D0
+             end if
+             st = logit%data_patt_st( cov_patt )
+             fin = logit%data_patt_fin( cov_patt )
+             do patt = st, fin
+                i = logit%row_posn_data_patt( patt )
+                ystar = work%ystar(i, ycol)
+                rtmp = logit%freq_data_patt( patt )
+                if( ( rtmp > 0.D0 ) .and. ( ystar /= mvcode ) ) then
+                   sum = 0.D0
+                   size_mapset = size( work%mapping%vec(ycol)%vec(ystar)%vec )
+                   do j = 1, size_mapset
+                      y = work%mapping%vec(ycol)%vec(ystar)%vec(j)
+                      sum = sum + logit%pi_saturated(y)
+                   end do
+                   if( sum < 0.D0 ) goto 150
+                   if( sum == 0.D0 ) goto 300
+                   do j = 1, size_mapset
+                      y = work%mapping%vec(ycol)%vec(ystar)%vec(j)
+                      logit%freq_cov_patt_expected(y) = &
+                           logit%freq_cov_patt_expected(y) + &
+                           rtmp * logit%pi_saturated(y) / sum 
+                   end do
+                end if
+             end do
+             ! do the M-step
+             sum = 0.D0
+             do y = 1, logit%r
+                sum = sum + logit%freq_cov_patt_expected(y)
+             end do
+             if( sum == 0.D0 ) goto 200
+             do y = 1, logit%r
+                logit%pi_saturated_new(y) = &
+                     logit%freq_cov_patt_expected(y) / sum
+             end do
+             ! assess convergence
+             logit%converged_em_saturated( cov_patt ) = .true.
+             max_diff = 0.D0
+             do y = 1, logit%r
+                max_diff = max( max_diff, &
+                     abs( logit%pi_saturated_new(y) - &
+                     logit%pi_saturated(y) ) )
+             end do
+             if( max_diff > logit%crit_em ) &
+                  logit%converged_em_saturated( cov_patt ) = .false.
+             aborted = .false.
+          end do
+          logit%pimat(cov_patt,:) = logit%pi_saturated_new(:)
+          logit%max_diff_em = max( logit%max_diff_em, max_diff )
+          logit%iter_em = max( logit%iter_em, &
+               logit%iter_em_saturated( cov_patt ) )
+       end do
+       logit%aborted = aborted
+       ! report converged
+       logit%converged_em = .true.
+       do cov_patt = 1, logit%n_cov_patt
+          if( .not. logit%converged_em_saturated( cov_patt ) ) then
+             logit%converged_em = .false.
+             exit
+          end if
+       end do
+       ! check boundary
+       boundary = .false.
+       do cov_patt = 1, logit%n_cov_patt
+          do y = 1, logit%r
+             if( logit%pimat(cov_patt, y) <= logit%crit_boundary ) then
+                boundary = .true.
+                exit
+             end if
+          end do
+          if( boundary ) exit
+       end do
+       logit%boundary = boundary
+       if( boundary ) then
+          call err_handle(err, 1, &
+               comment = "Estimate at or near boundary" )
+       end if
+       ! compute final loglik and logprior
+       logit%logprior = 0.D0
+       if( logit%prior == "DAP" ) then
+          do cov_patt = 1, logit%n_cov_patt
+             do y = 1, logit%r
+                if( logit%prior_freq_cov_patt(y) > 0.D0 ) then
+                   if( logit%pimat(cov_patt, y) <= 0.D0 ) goto 300
+                   logit%logprior = logit%logprior + &
+                        logit%prior_freq_cov_patt(y) * &
+                        log( logit%pimat(cov_patt, y) )
+                end if
+             end do
+          end do
+       end if
+       logit%loglik = 0.D0
+       do cov_patt = 1, logit%n_cov_patt
+          if( logit%cov_patt_empty( cov_patt ) ) cycle
+          st = logit%data_patt_st( cov_patt )
+          fin = logit%data_patt_fin( cov_patt )
+          do patt = st, fin
+             i = logit%row_posn_data_patt( patt )
+             ystar = work%ystar(i, ycol)
+             rtmp = logit%freq_data_patt( patt )
+             if( ( rtmp > 0.D0 ) .and. ( ystar /= mvcode ) ) then
+                sum = 0.D0
+                size_mapset = size( work%mapping%vec(ycol)%vec(ystar)%vec )
+                do j = 1, size_mapset
+                   y = work%mapping%vec(ycol)%vec(ystar)%vec(j)
+                   sum = sum + logit%pimat(cov_patt,y)
+                end do
+                if( sum < 0.D0 ) goto 150
+                if( sum == 0.D0 ) goto 300
+                logit%loglik = logit%loglik + rtmp * log(sum)
+             end if
+          end do
+       end do
+       ! normal exit
+       answer = RETURN_SUCCESS
+       goto 999
+       ! error traps
+100    call err_handle(err, 1, &
+           comment = "Model is non-saturated, this function cannot be used" )
+       goto 800
+150    call err_handle(err, 1, &
+           comment = "Negative probability encountered" )
+       goto 800
+200    call err_handle(err, 1, &
+            comment = "Attempted division by zero" )
+       call err_handle(err, 3, iobs=i)
+       goto 800
+300    call err_handle(err, 1, &
+            comment = "Positive frequency seen for event of prob=0" )
+       goto 800
+800    call err_handle(err, 2, whichsub = subname, whichmod = modname )
+       goto 999
+       ! cleanup
+999    continue
+     end function run_logit_em_saturated
+     !##################################################################
+     integer(kind=our_int) function run_cvam_logit_predict( &
+          model_type_int, type_int, x, ystar, freq_int, &
+          n_levels_matrix, packed_map, baseline, &
+          row_posn_data_patt, freq_int_data_patt, &
+          row_posn_cov_patt, &
+          cov_patt_for_data_patt, reverse_patt, &
+          mvcode, nancode, infcode, neginfcode, se_fit_int, &
+          pimat, beta, vhat_beta, &
+          work, err, &
+          se_mat, vhat_pimat_array ) result(answer)
+        implicit none
+        ! declare inputs
+        integer(kind=our_int), intent(in) :: model_type_int
+        integer(kind=our_int), intent(in) :: type_int
+        real(kind=our_dble), intent(in) :: x(:,:)
+        integer(kind=our_int), intent(in) :: ystar(:,:)
+        integer(kind=our_int), intent(in) :: freq_int(:)
+        integer(kind=our_int), intent(in) :: n_levels_matrix(:,:)
+        integer(kind=our_int), intent(in) :: packed_map(:)
+        integer(kind=our_int), intent(in) :: baseline
+        integer(kind=our_int), intent(in) :: row_posn_data_patt(:)
+        integer(kind=our_int), intent(in) :: freq_int_data_patt(:)
+        integer(kind=our_int), intent(in) :: row_posn_cov_patt(:)
+        integer(kind=our_int), intent(in) :: cov_patt_for_data_patt(:)
+        integer(kind=our_int), intent(in) :: reverse_patt(:,:)
+        real(kind=our_dble), intent(in) :: mvcode
+        real(kind=our_dble), intent(in) :: nancode
+        real(kind=our_dble), intent(in) :: infcode
+        real(kind=our_dble), intent(in) :: neginfcode
+        integer(kind=our_int), intent(in) :: se_fit_int
+        ! next one is inout
+        real(kind=our_dble), intent(inout) :: pimat(:,:)
+        real(kind=our_dble), intent(in) :: beta(:,:)
+        real(kind=our_dble), intent(in) :: vhat_beta(:,:)
+        ! workspaces
+        type(workspace_type_cvam_basic), intent(inout) :: work
+        type(error_type), intent(inout) :: err
+        ! outputs
+        real(kind=our_dble), intent(out) :: se_mat(:,:)
+        real(kind=our_dble), intent(out) :: vhat_pimat_array(:,:,:)
+        ! locals
+        logical :: logit_scale, se_fit
+        integer(kind=our_int) :: ijunk
+        character(len=*), parameter :: subname = "run_cvam_logit_predict"
+        ! begin
+        answer = RETURN_FAIL
+        work%model_type = "logit"
+        if( type_int == 1 ) then    ! type = "response"
+           logit_scale = .false.
+        else if( type_int == 2 ) then   ! type = "link"
+           logit_scale = .true.
+        else
+           goto 50
+        end if
+        if( se_fit_int == 0 ) then
+           se_fit = .false.
+        else
+           se_fit = .true.
+        end if
+        if( put_data_into_basic_workspace( x, ystar, freq_int, &
+             n_levels_matrix, packed_map, work, err ) &
+             == RETURN_FAIL ) goto 800
+        if( setup_logit_workspace( model_type_int, 3, baseline, &
+           row_posn_data_patt, freq_int_data_patt, &
+           row_posn_cov_patt, cov_patt_for_data_patt, reverse_patt, &
+           1, 1.D0, 0.D0, 0.D0, &
+           1.D0, 1.D0, 1.D0, &
+           0, 0, 1, 0, &
+           pimat, beta, &
+           work, err, for_prediction=.true., mvcode=mvcode ) &
+           == RETURN_FAIL ) goto 800
+        !
+        if( work%logit%model_type == "non-saturated" ) then
+           work%logit%beta(:) = work%logit%beta_new(:)
+           if( compute_pimat_logit( work, work%logit, err, &
+                logit_scale=logit_scale, mvcode=mvcode ) &
+                == RETURN_FAIL ) goto 800
+           pimat(:,:) = work%logit%pimat(:,:)
+           if( se_fit ) then
+              if( compute_se_logit_predict( work, work%logit, logit_scale, &
+                   mvcode, vhat_beta, se_mat, vhat_pimat_array, err ) &
+                   == RETURN_FAIL ) goto 800
+           end if
+        else if( work%logit%model_type == "saturated" ) then
+           work%logit%pimat(:,:) = work%logit%pimat_new(:,:)
+           if( logit_scale ) then
+              if( convert_pimat_to_logit_scale( work, work%logit, &
+                   mvcode, nancode, infcode, neginfcode, err ) &
+                   == RETURN_FAIL ) goto 800
+           end if
+           pimat(:,:) = work%logit%pimat(:,:)
+        else
+           goto 55
+        end if
+        ! normal exit
+        answer = RETURN_SUCCESS
+        goto 999
+        ! error traps
+50      call err_handle(err, 1, &
+             comment = "Value of type_int not recognized" )
+        goto 800
+55      call err_handle(err, 1, &
+             comment = "Value of model_type not recognized" )
+        goto 800
+800     call err_handle(err, 2, whichsub = subname, whichmod = modname )
+        goto 999
+        ! cleanup
+999     continue
+        ijunk = nullify_workspace_type_cvam_basic( work, err )
+     end function run_cvam_logit_predict
+     !##################################################################
+     integer(kind=our_int) function convert_pimat_to_logit_scale( &
+          work, logit, mvcode, nancode, infcode, neginfcode, err ) &
+          result(answer)
+       ! converts probabilities in pimat to logit scale
+       implicit none
+       ! declare workspaces and other inputs
+       type(workspace_type_cvam_basic), intent(inout) :: work
+       type(workspace_type_cvam_logit), intent(inout) :: logit
+       real(kind=our_dble), intent(in) :: mvcode
+       real(kind=our_dble), intent(in) :: nancode
+       real(kind=our_dble), intent(in) :: infcode
+       real(kind=our_dble), intent(in) :: neginfcode
+       type(error_type), intent(inout) :: err
+       ! declare locals
+       integer(kind=our_int) :: patt, k, baseline
+       real(kind=our_dble) :: num, den, rtmp
+       character(len=*), parameter :: &
+            subname = "convert_pimat_to_logit_scale"
+       ! begin
+       answer = RETURN_FAIL
+       baseline = logit%baseline
+       do patt = 1, logit%n_cov_patt
+          den = logit%pimat( patt, baseline )
+          logit%pimat( patt, baseline ) = 0.D0
+          do k = 1, logit%r
+             if( k == baseline ) cycle
+             num = logit%pimat( patt, k )
+             if( num == mvcode ) then
+                logit%pimat( patt, k ) = mvcode
+                cycle
+             end if
+             if( den == 0.D0 ) then
+                if( num == 0.D0 ) then
+                   logit%pimat( patt, k ) = nancode
+                else
+                   logit%pimat( patt, k ) = infcode
+                end if
+             else
+                if( num == 0.D0 ) then
+                   logit%pimat( patt, k ) = neginfcode
+                else
+                   rtmp = num / den
+                   if( rtmp <= 0.D0 ) then
+                      logit%pimat( patt, k ) = neginfcode 
+                   else
+                      logit%pimat( patt, k ) = log(rtmp)
+                   end if
+                end if
+             end if
+          end do
+       end do
+       ! normal exit
+       answer = RETURN_SUCCESS
+       goto 999
+       ! error traps
+800    call err_handle(err, 2, whichsub = subname, whichmod = modname )
+       goto 999
+       ! cleanup
+999    continue
+     end function convert_pimat_to_logit_scale
+     !##################################################################
+     integer(kind=our_int) function compute_se_logit_predict( &
+          work, logit, logit_scale, mvcode, vhat_beta, se_mat, &
+          vhat_pimat_array, err ) result(answer)
+       ! computes standard errors for predictions
+       ! Assumes that vhat_beta is supplied and is non-neg def
+       implicit none
+       ! declare workspaces
+       type(workspace_type_cvam_basic), intent(inout) :: work
+       type(workspace_type_cvam_logit), intent(inout) :: logit
+       ! other args
+       logical, intent(in) :: logit_scale
+       real(kind=our_dble), intent(in) :: mvcode
+       real(kind=our_dble), intent(in) :: vhat_beta(:,:)
+       real(kind=our_dble), intent(out) :: se_mat(:,:)
+       real(kind=our_dble), intent(out) :: vhat_pimat_array(:,:,:)
+       type(error_type), intent(inout) :: err
+       ! declare locals
+       logical :: mv_present
+       integer(kind=our_int) :: cov_patt, posn, y, i, j, k, l, ii
+       real(kind=our_dble) :: rtmp, sum
+       character(len=*), parameter :: &
+            subname = "compute_se_logit_predict"
+       ! begin
+       answer = RETURN_FAIL
+       !####
+       if( logit%model_type == "saturated" ) goto 50
+       if( size(vhat_beta, 1) /= logit%d ) goto 60
+       if( size(vhat_beta, 2) /= logit%d ) goto 60
+       if( size(se_mat, 1) /= logit%n_cov_patt ) goto 100
+       if( size(se_mat, 2) /= logit%r ) goto 100
+       if( size(vhat_pimat_array, 1) /= logit%n_cov_patt ) goto 150
+       if( size(vhat_pimat_array, 2) /= logit%r ) goto 150
+       if( size(vhat_pimat_array, 3) /= logit%r ) goto 150
+       !
+       do cov_patt = 1, logit%n_cov_patt
+          i = logit%row_posn_cov_patt(cov_patt)
+          ! check for missing values
+          mv_present = .false.
+          do k = 1, logit%p
+             if( work%pred(i, logit%xcol(k)) == mvcode ) then
+                mv_present = .true.
+                exit
+             end if
+          end do
+          if( mv_present ) then
+             se_mat(cov_patt,:) = mvcode
+             vhat_pimat_array(cov_patt,:,:) = mvcode
+             cycle
+          end if
+          ! compute derivs of pi wrt beta or, if logit_scale is .true.,
+          ! derivs of eta with respect to beta
+          ! result is stored in dpidbeta
+          if( logit_scale ) then
+             do y = 1, logit%r
+                if( y == logit%baseline ) then
+                   logit%dpidbeta(y,:) = 0.D0
+                   cycle
+                end if
+                posn = 0
+                do k = 1, logit%r
+                   if( k == logit%baseline ) cycle
+                   do j = 1, logit%p
+                      posn = posn + 1
+                      if( k == y ) then
+                         logit%dpidbeta(y, posn) = work%pred(i, logit%xcol(j))
+                      else
+                         logit%dpidbeta(y, posn) = 0.D0
+                      end if
+                   end do
+                end do
+             end do
+          else
+             do y = 1, logit%r
+                posn = 0
+                do k = 1, logit%r
+                   if( k == logit%baseline ) cycle
+                   do j = 1, logit%p
+                      posn = posn + 1
+                      if( k == y ) then
+                         rtmp = 1.D0
+                      else
+                         rtmp = 0.D0
+                      end if
+                      logit%dpidbeta(y, posn) = logit%pimat(cov_patt, y) * &
+                           ( rtmp - logit%pimat(cov_patt, k) ) * &
+                           work%pred(i, logit%xcol(j))
+                   end do
+                end do
+             end do
+          end if
+          ! premultiply vhat_beta by dpidbeta
+          do j = 1, logit%r
+             do k = 1, logit%d
+                sum = 0.D0
+                do l = 1, logit%d
+                   sum = sum + logit%dpidbeta(j,l) * vhat_beta(l,k)
+                end do
+                logit%wkrdA(j,k) = sum
+             end do
+          end do
+          ! post-multiply by t(dpidbeta), taking advantage of symmetry
+          do j = 1, logit%r
+             do k = 1, j
+                sum = 0.D0
+                do l = 1, logit%d
+                   sum = sum + logit%wkrdA(j,l) * logit%dpidbeta(k,l)
+                end do
+                vhat_pimat_array(cov_patt,j,k) = sum
+             end do
+          end do
+          do j = 1, ( logit%r - 1 )
+             do k = ( j + 1 ), logit%r
+                vhat_pimat_array(cov_patt,j,k) = &
+                     vhat_pimat_array(cov_patt,k,j)
+             end do
+          end do
+          ! square roots of diagonals
+          do j = 1, logit%r
+             if( vhat_pimat_array(cov_patt,j,j) < 0.D0 ) goto 200
+             se_mat(cov_patt,j) = sqrt( vhat_pimat_array(cov_patt,j,j) )
+          end do
+       end do
+       ! normal exit
+       answer = RETURN_SUCCESS
+       goto 999
+       ! error traps
+50     call err_handle(err, 1, &
+            comment = "Standard errors not available for saturated fit" )
+       goto 800
+60     call err_handle(err, 1, &
+            comment = "Array vhat_beta has incorrect size" )
+       goto 800
+100    call err_handle(err, 1, &
+            comment = "Array se_mat has incorrect size" )
+       goto 800
+150    call err_handle(err, 1, &
+            comment = "Array vhat_pimat_array has incorrect size" )
+       goto 800
+200    call err_handle(err, 1, &
+            comment = "Attempted square root of negative number" )
+       goto 800
+800    call err_handle(err, 2, whichsub = subname, whichmod = modname )
+       goto 999
+       ! cleanup
+999    continue
+     end function compute_se_logit_predict
+     !##################################################################
+     !##################################################################
+     !##################################################################
+     !##################################################################
+     !##################################################################
+     integer(kind=our_int) function run_cvam_lcmeas( &
          method_int, x, ystar, freq_int, &
          n_levels_matrix, packed_map, baseline, &
          ncol_x, xcol, &

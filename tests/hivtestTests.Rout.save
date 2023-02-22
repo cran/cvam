@@ -56,7 +56,7 @@ Gradient length = 0.000003
 Final loglik = 1535.422
 
 Estimates from EM, with Hessian-based SEs
-                coef       SE tstat   pval
+                coef       SE zstat   pval
 (Intercept) -12.7888 596.9637 -0.02 0.9829
 L1           -3.4995 596.9637 -0.01 0.9953
 A1           -4.0926 343.4382 -0.01 0.9905
